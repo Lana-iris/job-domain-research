@@ -1,0 +1,78 @@
+---
+name: job-domain-research
+description: Use when 需要对某岗位域/职能做持续研究（岗位能力要求、招聘市场信号、AI 对某职能的影响、职业定位校准、岗位域趋势报告），或维护可追溯的招聘/岗位数据与周期性研究输出时。
+---
+
+# job-domain-research
+
+对指定岗位域持续采集公开信号与真实招聘信息，按证据强度分级，产出带反证与验证实验的周期性研究输出，并维护可追溯的岗位数据。
+
+## 何时使用
+- 持续跟踪某岗位域的市场信号与真实招聘
+- 研究岗位能力要求 / 招聘市场信号
+- 跟踪 AI 对某职能的影响
+- 职业定位校准
+- 输出岗位域趋势报告
+
+## 不适用 / 边界
+- 不做调度：本技能只定义"一次运行"。
+- 不替使用者做最终职业决策。
+- 不写死任何领域词表、来源或输出路径。
+
+## 最终目标
+用真实市场证据持续推进定位与产出，不追求"证明某个选择正确"。
+闭环：市场证据 → 职业假设 → 反证 → 能力模型 → 作品集 → 实验 → 新证据。
+
+## 运行前
+读取当前岗位域项目下的知识层：
+- `profile.md`（个人）
+- `research-state.md`（研究，唯一真源；含 关键词集 与 信号优先类别）
+缺失任一 → 执行 `references/onboarding-flow.md`。
+若 `profile.md` 主方向暂缺 → 先协助拆分候选方向（见 `references/onboarding-flow.md`），不强行先选定。
+
+## 核心方法
+1. 研究闭环：市场信号 → 证据 → 判断 → 假设 → 反证 → 实验 → 新证据（能力模型 / 产出物由 O3 承接）。
+2. 证据分级：见 `references/evidence-grading.md`；结论强度不得超过证据强度。
+3. 反证内联：每条假设下同时写"支持"与"反证"。
+4. 增量输出：以 `research-state.md` 为基线，只写相较上期的变化；并参考最近 2–3 天信号库以保持连续性。
+5. 强度守恒：证据不足时写"当前证据不足"，不补全。
+6. 采集与筛选口径（默认）：关注过去 24 小时，必要时回溯 3 天；每日 3–5 个重要信号，同源合并；筛选判据（优先/过滤/合并）见 `references/signal-selection.md`；岗位域的「信号优先类别」见 `research-state.md`。
+7. 数据层：信号库目录与文件命名由 `research-state.md` 声明（默认 `YYYY-MM-DD-日报.md`）。
+
+## 默认风格（可被 `research-state.md` 输出偏好覆盖）
+- 中文；结论先行；简明、清晰、具体；战略分析而非新闻摘要。
+- 区分事实 / 推断 / 建议。
+- 当日无重大变化时，直接写"今日无重大变化"。
+- 英文来源提供中文摘要，并说明其意义。
+
+## 产出
+| 产出 | 模板 | 说明 |
+|---|---|---|
+| O1 信号日报 | `templates/signal-daily.template.md` | 每日 |
+| O2 岗位数据维护 | `references/jd-maintenance-rules.md` + `templates/jd-library.template.xlsx` + `resources/jd_tool.py` | 随 O1 |
+| O3 定位校准 | `templates/positioning-review.template.md` | 周，条件触发 |
+| O4 趋势报告 | `templates/domain-trend-report.template.md` | 月/季，多方向横比 |
+| O5 单次分析 | 复用 O3/O4 | 触发式 |
+
+## 工作流
+- 日：O1（+ O2）
+- 周：O3（仅当 profile 目标含"探索/求职"）；O3 默认独立成文，如需并轨到某文件末尾，在 `research-state.md` 声明。
+- 月/季：O4
+- 触发式：O5
+
+节奏的绝对时间（几点/周几/几号）由 `research-state.md` 声明。
+
+## 运行清单（每次运行按阶段按需读取）
+| 阶段 | 读取 | 用到的字段 |
+|---|---|---|
+| 通用 | `profile.md`；`research-state.md` | profile：目标方向 / 目标 / 限制；research-state：研究问题 / 信号域 / 输出偏好 / 节奏表 |
+| O1 信号日报 | `references/evidence-grading.md`；`references/signal-selection.md`；`templates/signal-daily.template.md` | research-state：§二 信号优先类别 + 关键词集、§三 输出偏好、§五 已知反证、§四 待验证表、§六 产出物状态；profile：主方向、能力现状 |
+| O2 岗位数据维护 | `references/jd-maintenance-rules.md`；`templates/jd-library.template.xlsx`；`resources/jd_tool.py` | research-state：§二 关键词集；profile：目标方向、能力现状、限制（地点） |
+| O3 定位校准 | `templates/positioning-review.template.md` | research-state：§四 待验证表、§五 已知反证、§六 产出物状态、§一 研究问题；profile：目标方向、背景、限制、目标 |
+| O4 趋势报告 | `templates/domain-trend-report.template.md` | research-state：§二 信号域、§四 / §五 / §六；profile：主方向 + 候选方向 |
+| 档案缺失 | `references/onboarding-flow.md` | — |
+
+## 参考文件
+- templates/：profile · research-state · signal-daily · positioning-review · domain-trend-report · jd-library.template.xlsx
+- references/：evidence-grading · signal-selection · jd-maintenance-rules · onboarding-flow
+- resources/：jd_tool.py（岗位库维护执行器）
