@@ -5,19 +5,20 @@
 ## 安装
 
 ```bash
-git clone https://github.com/Lana-iris/job-domain-research.git ~/.config/opencode/skills/external/job-domain-research
+git clone https://github.com/Lana-iris/job-domain-research.git ~/.config/opencode/skills/personal/job-domain-research
 ```
 
 重启 OpenCode 后生效。
 
 ## 首次使用
 
-在岗位域项目目录准备 `profile.md` 与 `research-state.md`；缺失时技能会自动进入 onboarding 流程。
+在岗位域项目目录准备 `profile.md` 与 `research-state.md`；缺失时技能会自动进入 onboarding 流程。主方向可暂缺，技能会先协助拆分候选方向。
 
 ## 产出
 
 - O1 信号日报
-- O2 岗位数据维护
+- O2a 岗位扫描采集
+- O2b 岗位数据维护
 - O3 定位校准
 - O4 趋势报告
 - O5 单次分析
@@ -25,7 +26,7 @@ git clone https://github.com/Lana-iris/job-domain-research.git ~/.config/opencod
 ## 依赖
 
 - Python 3
-- `openpyxl`（仅 O2 岗位库维护需要）
+- `openpyxl`（O2b 岗位库维护需要）
 
 ## License
 

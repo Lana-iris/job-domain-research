@@ -26,7 +26,7 @@ description: Use when 需要对某岗位域/职能做持续研究（岗位能力
 ## 运行前
 读取当前岗位域项目下的知识层：
 - `profile.md`（个人）
-- `research-state.md`（研究，唯一真源；含 关键词集 与 信号优先类别）
+- `research-state.md`（研究，唯一真源；含 检索位矩阵 与 信号优先类别）
 缺失任一 → 执行 `references/onboarding-flow.md`。
 若 `profile.md` 主方向暂缺 → 先协助拆分候选方向（见 `references/onboarding-flow.md`），不强行先选定。
 
@@ -36,7 +36,7 @@ description: Use when 需要对某岗位域/职能做持续研究（岗位能力
 3. 反证内联：每条假设下同时写"支持"与"反证"。
 4. 增量输出：以 `research-state.md` 为基线，只写相较上期的变化；并参考最近 2–3 天信号库以保持连续性。
 5. 强度守恒：证据不足时写"当前证据不足"，不补全。
-6. 采集与筛选口径（默认）：关注过去 24 小时，必要时回溯 3 天；每日 3–5 个重要信号，同源合并；筛选判据（优先/过滤/合并）见 `references/signal-selection.md`；岗位域的「信号优先类别」见 `research-state.md`。
+6. 采集与筛选口径（默认）：关注过去 24 小时，必要时回溯 3 天；每日 3–5 个重要信号，同源合并；筛选判据见 `references/signal-selection.md`；岗位域的「信号优先类别」见 `research-state.md`。
 7. 数据层：信号库目录与文件命名由 `research-state.md` 声明（默认 `YYYY-MM-DD-日报.md`）。
 
 ## 默认风格（可被 `research-state.md` 输出偏好覆盖）
@@ -49,30 +49,41 @@ description: Use when 需要对某岗位域/职能做持续研究（岗位能力
 | 产出 | 模板 | 说明 |
 |---|---|---|
 | O1 信号日报 | `templates/signal-daily.template.md` | 每日 |
-| O2 岗位数据维护 | `references/jd-maintenance-rules.md` + `templates/jd-library.template.xlsx` + `resources/jd_tool.py` | 随 O1 |
+| O2a 岗位扫描采集 | `references/jd-maintenance-rules.md` + `templates/platform-coverage.xlsx` | 每日（主动检索） |
+| O2b 岗位数据维护 | `references/jd-maintenance-rules.md` + `templates/jd-library.template.xlsx` + `resources/jd_tool.py` | 每日（刷新/失效/去重/排序） |
 | O3 定位校准 | `templates/positioning-review.template.md` | 周，条件触发 |
 | O4 趋势报告 | `templates/domain-trend-report.template.md` | 月/季，多方向横比 |
 | O5 单次分析 | 复用 O3/O4 | 触发式 |
 
 ## 工作流
-- 日：O1（+ O2）
+- 日：O1 + O2a + O2b
 - 周：O3（仅当 profile 目标含"探索/求职"）；O3 默认独立成文，如需并轨到某文件末尾，在 `research-state.md` 声明。
 - 月/季：O4
 - 触发式：O5
 
 节奏的绝对时间（几点/周几/几号）由 `research-state.md` 声明。
 
+## 交付清单（缺任一项 = 本轮未完成，不得宣称完成）
+| 产出 | 完成判据 |
+|---|---|
+| O1 信号日报 | 3–5 条 ×（证据等级 E1–E5 + Evidence / Why it matters / Career Implication / Counterevidence / Experiment）；今日学习建议 3 问；今日 JD 扫描报告；发布日期精确到日（月/年须标"日未披露"） |
+| O2a 岗位扫描采集 | 检索位矩阵全部 query 执行；平台覆盖台账逐平台有状态；首轮基线记录（覆盖 / 候选 / 去重 / 核验 / 状态不明）或持续维护记录；0 新增给出三态归因 |
+| O2b 岗位数据维护 | 新增 / 刷新 / 失效；迭代日志已由 `jd_tool.py` 自动写入；strict 四列非空；`audit` 通过 |
+| O3 定位校准 | ①–④；支持↔反证同框；只写相较上期变化；回写 `research-state.md` |
+| O4 趋势报告 | ①–④；多方向横比；证据等级 |
+
 ## 运行清单（每次运行按阶段按需读取）
 | 阶段 | 读取 | 用到的字段 |
 |---|---|---|
 | 通用 | `profile.md`；`research-state.md` | profile：目标方向 / 目标 / 限制；research-state：研究问题 / 信号域 / 输出偏好 / 节奏表 |
-| O1 信号日报 | `references/evidence-grading.md`；`references/signal-selection.md`；`templates/signal-daily.template.md` | research-state：§二 信号优先类别 + 关键词集、§三 输出偏好、§五 已知反证、§四 待验证表、§六 产出物状态；profile：主方向、能力现状 |
-| O2 岗位数据维护 | `references/jd-maintenance-rules.md`；`templates/jd-library.template.xlsx`；`resources/jd_tool.py` | research-state：§二 关键词集；profile：目标方向、能力现状、限制（地点） |
+| O1 信号日报 | `references/evidence-grading.md`；`references/signal-selection.md`；`templates/signal-daily.template.md` | research-state：§二 检索位矩阵 + 信号优先类别、§三 输出偏好、§五 已知反证、§四 待验证表、§六 产出物状态；profile：主方向、能力现状 |
+| O2a 岗位扫描采集 | `references/jd-maintenance-rules.md`；`templates/platform-coverage.xlsx` | research-state：§二 检索位矩阵；profile：目标方向、能力现状、限制（地点） |
+| O2b 岗位数据维护 | `references/jd-maintenance-rules.md`；`references/jd-library-fields.md`；`templates/jd-library.template.xlsx`；`resources/jd_tool.py` | research-state：§二 检索位矩阵；profile：目标方向、能力现状、限制（地点）；工具可用 --config 覆盖默认权重/城市/阈值 |
 | O3 定位校准 | `templates/positioning-review.template.md` | research-state：§四 待验证表、§五 已知反证、§六 产出物状态、§一 研究问题；profile：目标方向、背景、限制、目标 |
 | O4 趋势报告 | `templates/domain-trend-report.template.md` | research-state：§二 信号域、§四 / §五 / §六；profile：主方向 + 候选方向 |
 | 档案缺失 | `references/onboarding-flow.md` | — |
 
 ## 参考文件
-- templates/：profile · research-state · signal-daily · positioning-review · domain-trend-report · jd-library.template.xlsx
-- references/：evidence-grading · signal-selection · jd-maintenance-rules · onboarding-flow
+- templates/：profile · research-state · signal-daily · positioning-review · domain-trend-report · jd-library.template.xlsx · platform-coverage.xlsx
+- references/：evidence-grading · signal-selection · jd-maintenance-rules · jd-library-fields · onboarding-flow
 - resources/：jd_tool.py（岗位库维护执行器）

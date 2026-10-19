@@ -9,6 +9,8 @@ jd_tool.py — JD 活跃库维护工具（通用）
 用法：
     python3 jd_tool.py --workbook <路径> audit                 # 只读体检，不改数据
     python3 jd_tool.py --workbook <路径> add new.json          # 追加当日新 JD（JSON 数组）
+    python3 jd_tool.py --workbook <路径> add new.json --strict # strict 四列缺任一即拒收
+    python3 jd_tool.py --workbook <路径> add new.json --r-unknown 0.4  # 覆盖「发布日期未知」时的 R
     python3 jd_tool.py --workbook <路径> refresh --ids JD251,JD256   # 刷新「最后发现日期」
     python3 jd_tool.py --workbook <路径> purge                 # 超期移入失效（默认只预览）
     python3 jd_tool.py --workbook <路径> purge --apply         # 真正执行
@@ -17,22 +19,26 @@ jd_tool.py — JD 活跃库维护工具（通用）
     python3 jd_tool.py --workbook <路径> repair                # 修脏数据（默认只预览）
     python3 jd_tool.py --workbook <路径> repair --apply
     python3 jd_tool.py --workbook <路径> set --file fix.json   # 补空值单元格（默认只预览）
+    python3 jd_tool.py --workbook <路径> recompute             # 按存量输入列重算分值（默认只预览）
+    python3 jd_tool.py --workbook <路径> recompute --apply
     python3 jd_tool.py --workbook <路径> backup                # 手动备份
 
     --workbook 默认当前目录下的「JD扫描-活跃库.xlsx」；--config 可覆盖默认规格（见下）。
 
 规则真源：见本技能 references/jd-maintenance-rules.md（权重/失效/文件策略等默认）。
 本工具只是它的可执行实现，不新增规则。
-不在本工具职责内：工具不写「迭代日志」与趋势视图，由技能产出承接。
+每次写操作保存前自动向「迭代日志」sheet 追加一行（日期 / 变更项 / 旧值 / 新值 / 原因）；
+工作簿无该 sheet 时只打印警告，不阻断保存。
 
-R 时效「未知」口径（2026-10-12 经用户确认）：
-    取 1.0（新发现即新鲜），与 2026-09-14~10-07 的 11 个历史脚本一致，
-    以使新旧综合分可比、不静默重排名次。旧口径曾写 0.4，已同步改正。
+R 时效「未知」口径（2026-10-16 用户裁定）：
+    未知取 0.4（与 >90 天同级，不把「发布日期不明」当成新鲜）；
+    存量数据按需执行 recompute 重算。--r-unknown 可临时覆盖该默认值。
 
 设计要点
 - 列一律按「表头名」定位，绝不按列号硬编码（2026-09-22 曾因列号错位漏了 10 条）。
 - 任何写操作前自动备份到工作簿同目录下的 `备份/`。
-- purge / sort 默认 dry-run，必须显式 --apply 才落盘。
+- purge / sort / repair / set / recompute 默认 dry-run，必须显式 --apply 才落盘。
+- add 默认只校验 5 个必填输入列；加 --strict 时还要求 strict 四列全部非空。
 - 失效表的 col33/col34 是「失效日期 / 失效原因」（无表头），迁移时写入这两列。
 - 查重同时用「严格键」与「归一化键」（公司名剥离尾部标注 + 城市取主体）；
   归一化**只用于查重，不改写表内原始值**（2026-10-14 新增，修 JD262/JD182 类漏判）。
@@ -86,6 +92,9 @@ CONFIG = _copy.deepcopy(DEFAULT_CONFIG)
 # 综合优先级分必填的输入列（用于 add 校验与 audit 重算）
 REQUIRED_INPUTS = ["公司名称", "职位名称", "工作城市", "契合度(1-5)", "当前可达性(1-5)"]
 
+# add --strict 要求全部非空的四列（规则 §二；空则拒收）
+STRICT_COLS = ["岗位/职能专有能力要求", "Market Signal", "Portfolio Relevance", "Portfolio Benchmark"]
+
 
 def _rel(p: Path) -> str:
     try:
@@ -117,12 +126,12 @@ def parse_date(v):
     return None
 
 
-def r_weight(pub, scan, unknown=1.0):
-    """R 时效（默认规格见 references/jd-maintenance-rules.md §三）。发布日期未知 → unknown（**默认 1.0**）。
+def r_weight(pub, scan, unknown=0.4):
+    """R 时效（默认规格见 references/jd-maintenance-rules.md §三）。发布日期未知 → unknown（**默认 0.4**）。
 
-    口径已裁定（2026-10-12，用户确认）：未知取 1.0，即「新发现即新鲜」，
-    与 2026-09-14~10-07 的 11 个历史脚本一致，保证新旧综合分可比。
-    如需改回严格下限，传 --r-unknown 0.4。
+    口径已裁定（2026-10-16，用户确认）：未知取 0.4，与「>90 天」同级，
+    不把「发布日期不明」当成新鲜；存量数据按需 recompute。
+    如需临时采用其他口径，传 --r-unknown。
     """
     d = parse_date(pub)
     if d is None:
@@ -267,9 +276,30 @@ class Book:
         print(f"  [备份] {dst}")
         return dst
 
+    LOG_SHEET = "迭代日志"
+    LOG_COLS = ["日期", "变更项", "旧值", "新值", "原因"]
+
+    def append_iter_log(self, why=""):
+        """保存前向「迭代日志」追加一行；sheet/表头缺失只警告，不报错。"""
+        if self.LOG_SHEET not in self.wb.sheetnames:
+            print(f"  WARN 无「{self.LOG_SHEET}」sheet，跳过日志写入")
+            return False
+        ws = self.wb[self.LOG_SHEET]
+        hdr = self._header_index(ws)
+        missing = [h for h in self.LOG_COLS if h not in hdr]
+        if missing:
+            print(f"  WARN 「{self.LOG_SHEET}」缺表头 {missing}，跳过日志写入")
+            return False
+        vals = [str(dt.date.today()), why or "update", "", "", "auto-by jd_tool"]
+        r = ws.max_row + 1
+        for name, val in zip(self.LOG_COLS, vals):
+            ws.cell(r, hdr[name]).value = val
+        return True
+
     def save(self, do_backup=True, why=""):
         if do_backup:
             self.backup(why)
+        self.append_iter_log(why)
         self.wb.save(self.path)
         print(f"  [保存] {self.path}")
 
@@ -392,7 +422,7 @@ def cmd_audit(bk: Book, args):
         d = parse_date(v.get("截止日期"))
         if d and d < today:
             conflict.append((v.get("去重ID"), v.get("公司名称"), v.get("职位名称"), str(d)))
-    print(f"\n[7] 截止日期已过但仍活跃：{len(conflict)} 条（规则 §四判据之一，但仍在被检索到 → 冲突）")
+    print(f"\n[7] 截止日期已过但仍活跃：{len(conflict)} 条（`jd-maintenance-rules.md` §五 判据之一；截止日期多为估算，不自动清理）")
     for x in conflict:
         print(f"    {x}")
     if conflict:
@@ -468,6 +498,12 @@ def cmd_add(bk: Book, args):
         if miss:
             print(f"  SKIP 缺少必填 {miss}：{it.get('公司名称', '?')} · {it.get('职位名称', '?')}")
             continue
+        lack = [c for c in STRICT_COLS if it.get(c) in (None, "")]
+        if lack:
+            if args.strict:
+                print(f"  SKIP strict 缺列 {lack}：{it.get('公司名称', '?')} · {it.get('职位名称', '?')}")
+                continue
+            print(f"  WARN 缺 strict 列 {lack}：{it.get('公司名称', '?')} · {it.get('职位名称', '?')}")
         k = key3(it)
         kn = key_norm(it)
         if k in have:
@@ -524,7 +560,7 @@ def cmd_add(bk: Book, args):
     print(f"\n  新增 {len(added)} 条：")
     for a in added:
         print(f"    {a[0]}  {a[1]} · {a[2]}  综合={a[3]}（R={a[4]}）")
-    if any(a[4] == args.r_unknown for a in added) and args.r_unknown != 1.0:
+    if any(a[4] == args.r_unknown for a in added) and args.r_unknown != 0.4:
         print(f"  ⚠ 有条目按「发布日期未知 → R={args.r_unknown}」计分")
 
     if not args.no_sort:
@@ -810,6 +846,81 @@ def cmd_set(bk: Book, args):
     return 0
 
 
+def _as_num(v):
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return float(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _same_num(a, b):
+    x, y = _as_num(a), _as_num(b)
+    if x is None or y is None:
+        return False
+    return abs(x - y) < 1e-6
+
+
+def cmd_recompute(bk: Book, args):
+    """按**存量输入列**重算派生分（默认 dry-run，--apply 才落盘）。
+
+    输入：发布日期 / 公司行业分 / 公司梯队分 / 契合度(1-5) / 当前可达性(1-5) / 工作城市，
+          城市权重Ci 优先取存量值（与 add 一致），缺失时按工作城市推导。
+    输出：时效权重R / 公司权重C / 契合权重F / 城市权重Ci / 综合优先级分，
+          以及「权重明细」（活跃表存在该列时一并同步）。
+    发布日期未知时 R 取 --r-unknown（默认 0.4）。
+    """
+    today = args.today
+    ha = bk.hdr_a()
+    need = ["发布日期", "公司行业分", "公司梯队分", "契合度(1-5)", "当前可达性(1-5)", "工作城市",
+            "时效权重R", "公司权重C", "契合权重F", "城市权重Ci", "综合优先级分"]
+    missing = [h for h in need if h not in ha]
+    if missing:
+        sys.exit(f"活跃表缺少 recompute 所需列：{missing}")
+
+    changes, skipped = [], []
+    for r, v in Book.rows(bk.active):
+        try:
+            R = r_weight(v.get("发布日期"), today, unknown=args.r_unknown)
+            C = round(c_weight(v.get("公司行业分", 0.5), v.get("公司梯队分", 0.7)), 3)
+            F = round(float(v["契合度(1-5)"]) / 5.0, 3)
+            Ci = ci_weight(v.get("工作城市"), v.get("城市权重Ci"))
+            A = float(v["当前可达性(1-5)"]) / 5.0
+        except (TypeError, ValueError):
+            skipped.append(v.get("去重ID"))
+            continue
+        new = {"时效权重R": R, "公司权重C": C, "契合权重F": F,
+               "城市权重Ci": Ci, "综合优先级分": total_score(R, C, F, Ci, A)}
+        diffs = [(k, v.get(k), val) for k, val in new.items() if not _same_num(v.get(k), val)]
+        if "权重明细" in ha:
+            new["权重明细"] = f"R{R}|C{round(C,2)}|F{F:.2f}|Ci{Ci}|A{A:.2f}"
+            if str(v.get("权重明细") or "") != new["权重明细"]:
+                diffs.append(("权重明细", v.get("权重明细"), new["权重明细"]))
+        if diffs:
+            changes.append((r, v, new, diffs))
+
+    print(f"== recompute（基准 {today}，R 未知={args.r_unknown}）==")
+    tail = f"，输入列不可解析 SKIP {len(skipped)} 条：{skipped[:6]}" if skipped else ""
+    print(f"  待更新 {len(changes)} 条{tail}")
+    for r, v, new, diffs in changes[:5]:
+        print(f"    {v.get('去重ID')}  {v.get('公司名称')} · {v.get('职位名称')}")
+        print("      " + "；".join(f"{k} {old}→{val}" for k, old, val in diffs))
+    if not changes:
+        print("  无需更新。")
+        return 0
+    if not args.apply:
+        print("\n  [dry-run] 未写入。确认后加 --apply 执行。")
+        return 0
+    for r, v, new, diffs in changes:
+        for k, val in new.items():
+            bk.active.cell(r, ha[k]).value = val
+    n = do_sort(bk)
+    print(f"\n  已重算 {len(changes)} 条，并按综合优先级分重排（{n} 行）")
+    bk.save(do_backup=not args.no_backup, why="recompute")
+    return 0
+
+
 # ---------------------------------------------------------------- backup
 
 def cmd_backup(bk: Book, args):
@@ -821,7 +932,14 @@ def cmd_backup(bk: Book, args):
 
 def main(argv=None):
     global CONFIG
-    p = argparse.ArgumentParser(description="JD 活跃库维护工具", formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description="JD 活跃库维护工具",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="示例：\n"
+               "  jd_tool.py --workbook <路径> add new.json --strict\n"
+               "  jd_tool.py --workbook <路径> add new.json --r-unknown 0.4\n"
+               "  jd_tool.py --workbook <路径> recompute [--apply]",
+    )
     p.add_argument("--workbook", type=Path, default=Path.cwd() / "JD扫描-活跃库.xlsx",
                    help="工作簿路径（默认当前目录下的 JD扫描-活跃库.xlsx）")
     p.add_argument("--config", type=Path, default=None,
@@ -836,8 +954,11 @@ def main(argv=None):
     a = sub.add_parser("add", help="追加当日新 JD（JSON 数组文件，或 - 读 stdin）")
     a.add_argument("file")
     a.add_argument("--allow-repost", action="store_true", help="允许失效后重新发布的岗位再入册")
-    a.add_argument("--r-unknown", type=float, default=1.0,
-                   help="发布日期未知时的 R（默认 1.0，2026-10-12 已裁定）")
+    a.add_argument("--strict", action="store_true",
+                   help="strict 四列（岗位/职能专有能力要求 / Market Signal / Portfolio Relevance / "
+                        "Portfolio Benchmark）任一为空即拒收")
+    a.add_argument("--r-unknown", type=float, default=0.4,
+                   help="发布日期未知时的 R（默认 0.4，2026-10-16 已裁定）")
     a.add_argument("--no-sort", action="store_true")
     a.add_argument("--no-backup", action="store_true")
 
@@ -867,6 +988,12 @@ def main(argv=None):
     a.add_argument("--apply", action="store_true")
     a.add_argument("--no-backup", action="store_true")
 
+    a = sub.add_parser("recompute", help="按存量输入列重算分值（默认 dry-run）")
+    a.add_argument("--apply", action="store_true")
+    a.add_argument("--r-unknown", type=float, default=0.4,
+                   help="发布日期未知时的 R（默认 0.4）")
+    a.add_argument("--no-backup", action="store_true")
+
     sub.add_parser("backup", help="手动备份")
 
     args = p.parse_args(argv)
@@ -875,7 +1002,7 @@ def main(argv=None):
     return {
         "audit": cmd_audit, "add": cmd_add, "refresh": cmd_refresh,
         "purge": cmd_purge, "sort": cmd_sort, "repair": cmd_repair,
-        "set": cmd_set, "backup": cmd_backup,
+        "set": cmd_set, "recompute": cmd_recompute, "backup": cmd_backup,
     }[args.cmd](bk, args)
 
 
