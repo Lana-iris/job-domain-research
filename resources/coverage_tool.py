@@ -9,7 +9,7 @@ coverage_tool.py — 平台覆盖台账维护工具（通用）
 用法：
     python3 coverage_tool.py --workbook <路径> append rows.json [--dry-run] [--allow-duplicate]
     python3 coverage_tool.py --workbook <路径> update --date 2026-10-21 --platform 猎聘 \
-        --qp QP1 --city 深圳 --inbound 3
+        --qp QP1 --city 深圳 --inbound 3 [--dry-run]
     python3 coverage_tool.py --workbook <路径> audit --date 2026-10-21 [--plan plan.json]
     python3 coverage_tool.py describe [--format markdown|json]
 
@@ -36,6 +36,7 @@ from typing import Any
 
 try:
     import openpyxl
+    from openpyxl.utils import get_column_letter
 except ImportError:  # pragma: no cover
     sys.exit("需要 openpyxl：pip install openpyxl")
 
@@ -96,7 +97,7 @@ COVERAGE_SPEC: list[dict[str, Any]] = [
         "meaning": "本次扫描后实际新增进活跃 JD 库的岗位数",
         "required": False,
         "type": "整数 ≥ 0",
-        "write_rule": "扫描阶段可留空或写 0；O2b 入库后回填，且不得大于相关候选数",
+        "write_rule": "扫描阶段可留空或写 0；O2b 入库后回填；未执行时只能留空或 0；不得大于相关候选数",
         "example": "3",
     },
     {
@@ -122,6 +123,7 @@ KEY_FIELDS = ("检索日期", "平台", "检索位/查询词", "城市")
 STATUSES = ("已检索", "受限", "未执行")
 QP_PATTERN = re.compile(r"^QP\d+\s*[｜|].+")
 QP_ID_PATTERN = re.compile(r"^(QP\d+)")
+PLAN_QP_ID_PATTERN = re.compile(r"^QP\d+$")
 DATE_PATTERN = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 DEFAULT_WORKBOOK = "platform-coverage.xlsx"
@@ -170,7 +172,7 @@ def row_key(row: dict[str, Any]) -> tuple[str, str, str, str]:
 
 
 def parse_int(value: Any, field: str, errors: list[str]) -> int | None:
-    """严格解析非负整数：拒绝 bool / float / 带小数的字符串。"""
+    """严格解析非负整数：只接受 JSON 整数，拒绝 bool / float / 文本。"""
     if isinstance(value, bool):
         errors.append(f"{field} 必须是整数，不能是布尔值")
         return None
@@ -179,9 +181,7 @@ def parse_int(value: Any, field: str, errors: list[str]) -> int | None:
             errors.append(f"{field} 不能为负数（当前 {value}）")
             return None
         return value
-    if isinstance(value, str) and re.fullmatch(r"\d+", value.strip()):
-        return int(value.strip())
-    errors.append(f"{field} 必须是整数，不能是小数、文本或空值（当前 {value!r}）")
+    errors.append(f"{field} 必须是 JSON 整数，不能是文本、小数或空值（当前 {value!r}）")
     return None
 
 
@@ -193,22 +193,30 @@ def load_sheet(path: Path):
         ws = wb[DEFAULT_SHEET]
     else:
         ws = wb.active
-    headers = [normalize_cell("", cell.value) for cell in ws[1]]
-    while headers and is_blank(headers[-1]):
-        headers.pop()
-    return wb, ws, headers
+        print(
+            f"[警告] 工作簿没有「{DEFAULT_SHEET}」sheet，改用「{ws.title}」",
+            file=sys.stderr,
+        )
+    return wb, ws
 
 
 def header_map(ws) -> dict[str, int]:
-    """表头名 -> 列号（1-based）。"""
+    """表头名 -> 列号（1-based）；重名直接报错。"""
     mapping: dict[str, int] = {}
+    duplicates: list[str] = []
     for cell in ws[1]:
         name = normalize_cell("", cell.value)
         if not isinstance(name, str):
             name = str(name)
         name = name.strip()
-        if name and name not in mapping:
+        if not name:
+            continue
+        if name in mapping:
+            duplicates.append(name)
+        else:
             mapping[name] = cell.column
+    if duplicates:
+        raise SystemExit(f"台账表头存在重复列名：{'、'.join(sorted(set(duplicates)))}")
     return mapping
 
 
@@ -275,8 +283,11 @@ def validate_item(raw: Any, index: int) -> tuple[dict[str, Any] | None, list[str
 
     # 必填文本
     for name in ("平台", "城市"):
-        if is_blank(row[name]):
+        value = row[name]
+        if is_blank(value):
             errors.append(f"{label}：{name} 必填")
+        elif not isinstance(value, str):
+            errors.append(f"{label}：{name} 必须是文本，不能是数字或其他类型（当前 {value!r}）")
 
     # 检索日期
     if is_blank(row["检索日期"]):
@@ -379,9 +390,13 @@ def load_json_items(path: Path) -> list[Any]:
 
 def cmd_append(args: argparse.Namespace) -> int:
     path = resolve_workbook(args.workbook)
-    wb, ws, _ = load_sheet(path)
+    wb, ws = load_sheet(path)
     mapping = check_headers(ws)
     items = load_json_items(Path(args.input).expanduser())
+
+    if not items:
+        print("已追加 0 条；跳过/拒绝 0 条（输入为空数组，未写入）")
+        return 0
 
     existing = {row_key(values) for _, values in read_rows(ws, mapping)}
     seen: dict[tuple[str, str, str, str], int] = {}
@@ -438,9 +453,17 @@ def cmd_append(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------- update
 
 
+def parse_cli_int(raw: Any, flag: str) -> int:
+    """CLI 参数本身都是字符串；只接受纯数字，转成 int 后再按整数规则校验。"""
+    text = str(raw).strip()
+    if not re.fullmatch(r"\d+", text):
+        raise SystemExit(f"{flag} 必须是非负整数（当前 {raw!r}）")
+    return int(text)
+
+
 def cmd_update(args: argparse.Namespace) -> int:
     path = resolve_workbook(args.workbook)
-    wb, ws, _ = load_sheet(path)
+    wb, ws = load_sheet(path)
     mapping = check_headers(ws)
 
     date_text = normalize_date(args.date)
@@ -449,9 +472,7 @@ def cmd_update(args: argparse.Namespace) -> int:
     except ValueError:
         raise SystemExit(f"--date 必须是真实日期 YYYY-MM-DD（当前 {args.date!r}）")
 
-    inbound = parse_int(args.inbound, "--inbound", [])
-    if not isinstance(inbound, int):
-        raise SystemExit(f"--inbound 必须是非负整数（当前 {args.inbound!r}）")
+    inbound = parse_cli_int(args.inbound, "--inbound")
 
     matches: list[tuple[int, dict[str, Any]]] = []
     for row_idx, values in read_rows(ws, mapping):
@@ -474,16 +495,26 @@ def cmd_update(args: argparse.Namespace) -> int:
         raise SystemExit(f"匹配到 {len(matches)} 行，无法确定更新目标，请用完整查询词区分")
 
     row_idx, values = matches[0]
+    if values.get("检索状态") == "未执行" and inbound > 0:
+        raise SystemExit("未执行的行 入库数 只能留空或写 0")
+
     candidates = values.get("相关候选数")
     if not is_blank(candidates):
-        candidates_int = parse_int(candidates, "相关候选数", [])
-        if isinstance(candidates_int, int) and inbound > candidates_int:
+        errors: list[str] = []
+        candidates_int = parse_int(candidates, "相关候选数", errors)
+        if candidates_int is None:
+            raise SystemExit(f"该行 相关候选数 无效：{errors[0]}")
+        if inbound > candidates_int:
             raise SystemExit(f"入库数（{inbound}）不能大于相关候选数（{candidates_int}）")
 
     old = values.get("入库数")
     old_display = "空" if is_blank(old) else str(old)
     print(f"  行 {row_idx}：{date_text} / {args.platform} / {values.get('检索位/查询词')} / {args.city}")
     print(f"  入库数：{old_display} → {inbound}")
+
+    if args.dry_run:
+        print("  （--dry-run，未写入）")
+        return 0
 
     backup_workbook(path)
     ws.cell(row=row_idx, column=mapping["入库数"], value=inbound)
@@ -494,9 +525,111 @@ def cmd_update(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------- audit
 
 
+def load_plan(path: Path) -> dict[str, Any]:
+    """载入并校验覆盖计划；所有错误都转成干净的中文报错。"""
+    if not path.exists():
+        raise SystemExit(f"找不到 plan 文件：{path}")
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise SystemExit(f"计划文件读取失败：{exc}") from exc
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"计划文件 JSON 解析失败：{exc}") from exc
+
+    if not isinstance(data, dict):
+        raise SystemExit("计划文件顶层必须是 JSON 对象")
+
+    if "platforms" not in data:
+        print("[警告] 计划文件缺少 platforms，按空列表处理", file=sys.stderr)
+        platforms: list[str] = []
+    else:
+        raw_platforms = data["platforms"]
+        if not isinstance(raw_platforms, list):
+            raise SystemExit("计划文件 platforms 必须是字符串数组")
+        platforms = []
+        for index, value in enumerate(raw_platforms, start=1):
+            if not isinstance(value, str) or not value.strip():
+                raise SystemExit(
+                    f"计划文件 platforms 第 {index} 项必须是非空字符串（当前 {value!r}）"
+                )
+            platforms.append(value.strip())
+
+    if "qps" not in data:
+        print("[警告] 计划文件缺少 qps，按空列表处理", file=sys.stderr)
+        qps: list[dict[str, Any]] = []
+    else:
+        raw_qps = data["qps"]
+        if not isinstance(raw_qps, list):
+            raise SystemExit("计划文件 qps 必须是对象数组")
+        qps = []
+        seen: set[str] = set()
+        for index, item in enumerate(raw_qps, start=1):
+            if not isinstance(item, dict):
+                raise SystemExit(f"计划文件 qps 第 {index} 项必须是 JSON 对象")
+            qp = item.get("id")
+            if not isinstance(qp, str) or not PLAN_QP_ID_PATTERN.match(qp.strip()):
+                raise SystemExit(
+                    f"计划文件 qps 第 {index} 项的 id 必须匹配 QP+数字（当前 {qp!r}）"
+                )
+            qp = qp.strip()
+            if qp in seen:
+                raise SystemExit(f"计划文件 qps 存在重复 id：{qp}")
+            seen.add(qp)
+            minimum = item.get("min_queries")
+            if isinstance(minimum, bool) or not isinstance(minimum, int) or minimum < 0:
+                raise SystemExit(
+                    f"计划文件 qps {qp} 的 min_queries 必须是非负整数（当前 {minimum!r}）"
+                )
+            qps.append({"id": qp, "min_queries": minimum})
+
+    return {"platforms": platforms, "qps": qps}
+
+
+def dedupe_rows(
+    rows: list[tuple[int, dict[str, Any]]],
+) -> tuple[list[tuple[int, dict[str, Any]]], list[tuple[int, dict[str, Any]]]]:
+    """按 key 去重；保留首次出现，返回 (有效行, 被忽略的重复行)。"""
+    kept: list[tuple[int, dict[str, Any]]] = []
+    duplicates: list[tuple[int, dict[str, Any]]] = []
+    seen: set[tuple[str, str, str, str]] = set()
+    for row_idx, values in rows:
+        key = row_key(values)
+        if key in seen:
+            duplicates.append((row_idx, values))
+        else:
+            seen.add(key)
+            kept.append((row_idx, values))
+    return kept, duplicates
+
+
+def audit_int(
+    value: Any,
+    row_idx: int,
+    field: str,
+    col: int,
+    warnings: list[str],
+) -> int | None:
+    """审计用整数读取：无效值不静默跳过，记一条带行/单元格的警告。"""
+    if is_blank(value):
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        coordinate = f"{get_column_letter(col)}{row_idx}"
+        warnings.append(
+            f"第 {row_idx} 行 {field}（{coordinate}）不是非负整数：{value!r}，未计入合计"
+        )
+        return None
+    return value
+
+
+def is_zero_candidate(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value == 0
+
+
 def cmd_audit(args: argparse.Namespace) -> int:
     path = resolve_workbook(args.workbook)
-    wb, ws, _ = load_sheet(path)
+    wb, ws = load_sheet(path)
     mapping = check_headers(ws)
 
     date_text = normalize_date(args.date)
@@ -505,18 +638,49 @@ def cmd_audit(args: argparse.Namespace) -> int:
     except ValueError:
         raise SystemExit(f"--date 必须是真实日期 YYYY-MM-DD（当前 {args.date!r}）")
 
-    rows = [
+    plan = load_plan(Path(args.plan).expanduser()) if args.plan else None
+
+    raw_rows = [
         (row_idx, values)
         for row_idx, values in read_rows(ws, mapping)
         if values.get("检索日期") == date_text
     ]
+    rows, duplicates = dedupe_rows(raw_rows)
 
-    plan: dict[str, Any] | None = None
-    if args.plan:
-        plan_path = Path(args.plan).expanduser()
-        if not plan_path.exists():
-            raise SystemExit(f"找不到 plan 文件：{plan_path}")
-        plan = json.loads(plan_path.read_text(encoding="utf-8"))
+    status_count: dict[str, int] = {}
+    platforms: dict[str, dict[str, Any]] = {}
+    per_qp_queries: dict[str, set[str]] = {}
+    numeric_warnings: list[str] = []
+
+    for row_idx, values in rows:
+        status = str(values.get("检索状态") or "未填")
+        status_count[status] = status_count.get(status, 0) + 1
+
+        platform = str(values.get("平台") or "未填")
+        entry = platforms.setdefault(
+            platform,
+            {"rows": 0, "statuses": {}, "candidates": 0, "inbound": 0},
+        )
+        entry["rows"] += 1
+        entry["statuses"][status] = entry["statuses"].get(status, 0) + 1
+
+        candidates = audit_int(
+            values.get("相关候选数"), row_idx, "相关候选数", mapping["相关候选数"], numeric_warnings
+        )
+        if candidates is not None:
+            entry["candidates"] += candidates
+        inbound = audit_int(
+            values.get("入库数"), row_idx, "入库数", mapping["入库数"], numeric_warnings
+        )
+        if inbound is not None:
+            entry["inbound"] += inbound
+
+        qp = qp_id(values.get("检索位/查询词")) or "未标注"
+        per_qp_queries.setdefault(qp, set()).add(
+            str(values.get("检索位/查询词") or "")
+        )
+
+    per_qp = {qp: len(queries) for qp, queries in per_qp_queries.items()}
 
     print(f"覆盖台账审计 · {date_text}")
     print(f"工作簿：{path}")
@@ -525,29 +689,10 @@ def cmd_audit(args: argparse.Namespace) -> int:
     if not rows:
         print("该日期没有记录。")
     else:
-        status_count: dict[str, int] = {}
-        for _, values in rows:
-            status = str(values.get("检索状态") or "未填")
-            status_count[status] = status_count.get(status, 0) + 1
-        status_line = "，".join(f"{key} {value}" for key, value in sorted(status_count.items()))
+        status_line = "，".join(
+            f"{key} {value}" for key, value in sorted(status_count.items())
+        )
         print(f"总行数：{len(rows)}    状态：{status_line}")
-
-        platforms: dict[str, dict[str, Any]] = {}
-        for _, values in rows:
-            platform = str(values.get("平台") or "未填")
-            entry = platforms.setdefault(
-                platform,
-                {"rows": 0, "statuses": {}, "candidates": 0, "inbound": 0},
-            )
-            entry["rows"] += 1
-            status = str(values.get("检索状态") or "未填")
-            entry["statuses"][status] = entry["statuses"].get(status, 0) + 1
-            candidates = values.get("相关候选数")
-            if not is_blank(candidates) and str(candidates).isdigit():
-                entry["candidates"] += int(candidates)
-            inbound = values.get("入库数")
-            if not is_blank(inbound) and str(inbound).isdigit():
-                entry["inbound"] += int(inbound)
 
         print("\n按平台：")
         for platform in sorted(platforms):
@@ -560,21 +705,18 @@ def cmd_audit(args: argparse.Namespace) -> int:
                 f"  候选 {entry['candidates']}  入库 {entry['inbound']}"
             )
 
-        per_qp: dict[str, int] = {}
-        for _, values in rows:
-            qp = qp_id(values.get("检索位/查询词")) or "未标注"
-            per_qp[qp] = per_qp.get(qp, 0) + 1
-
-        plan_qps = {item["id"]: int(item.get("min_queries", 0)) for item in (plan or {}).get("qps", [])} if plan else {}
         print("\n按检索位：")
         for qp in sorted(per_qp, key=lambda item: (not item.startswith("QP"), item)):
             count = per_qp[qp]
-            if plan_qps:
-                minimum = plan_qps.get(qp, 0)
+            if plan is not None and plan["qps"]:
+                minimum = next(
+                    (item["min_queries"] for item in plan["qps"] if item["id"] == qp),
+                    0,
+                )
                 verdict = "通过" if count >= minimum else "不足"
-                print(f"  {qp}：{count} 条查询，最低要求 {minimum}，{verdict}")
+                print(f"  {qp}：{count} 个不同查询，最低要求 {minimum}，{verdict}")
             else:
-                print(f"  {qp}：{count} 条查询")
+                print(f"  {qp}：{count} 个不同查询")
 
         restricted = [values for _, values in rows if values.get("检索状态") == "受限"]
         print("\n受限行：")
@@ -587,7 +729,9 @@ def cmd_audit(args: argparse.Namespace) -> int:
         else:
             print("  无")
 
-        zero = [values for _, values in rows if str(values.get("相关候选数")) == "0"]
+        zero = [
+            values for _, values in rows if is_zero_candidate(values.get("相关候选数"))
+        ]
         print("\n零候选行：")
         if zero:
             for values in zero:
@@ -598,33 +742,48 @@ def cmd_audit(args: argparse.Namespace) -> int:
         else:
             print("  无")
 
-        pending = [values for _, values in rows if is_blank(values.get("入库数"))]
-        print(f"\n入库数待回填：{len(pending)} 行")
+        pending = [
+            values
+            for _, values in rows
+            if values.get("检索状态") == "已检索" and is_blank(values.get("入库数"))
+        ]
+        print(f"\n入库数待回填：{len(pending)} 行（仅统计已检索）")
         for values in pending:
             print(f"  {values.get('平台')} / {values.get('检索位/查询词')} / {values.get('城市')}")
 
-        if plan:
-            print("\n对照 plan：")
-            planned_platforms = list(plan.get("platforms", []))
-            missing_platforms = [
-                name for name in planned_platforms if name not in platforms
-            ]
-            if missing_platforms:
-                print(f"  缺失平台：{'、'.join(missing_platforms)}")
-            else:
-                print("  平台覆盖：齐全")
+    if duplicates:
+        print("\n重复行：")
+        for row_idx, values in duplicates:
+            print(
+                f"  第 {row_idx} 行 {values.get('平台')} / {values.get('检索位/查询词')}"
+                f" / {values.get('城市')} — 与首条同键，已忽略"
+            )
+        print(f"  已忽略 {len(duplicates)} 行；聚合只保留首次出现")
 
-            missing_qps = [
-                f"{qp}（要求 {minimum} 条，实际 0 条）"
-                for qp, minimum in plan_qps.items()
-                if per_qp.get(qp, 0) < minimum
-            ]
-            if missing_qps:
-                print(f"  检索位不足：{'、'.join(missing_qps)}")
-            else:
-                print("  检索位覆盖：达标")
+    for warning in numeric_warnings:
+        print(f"[警告] {warning}", file=sys.stderr)
+
+    if plan is not None:
+        print("\n对照 plan：")
+        missing_platforms = [
+            name for name in dict.fromkeys(plan["platforms"]) if name not in platforms
+        ]
+        if missing_platforms:
+            print(f"  缺失平台：{'、'.join(missing_platforms)}")
         else:
-            print("\n[警告] 未提供 --plan，只能看已记录内容，无法判断是否有平台或检索位漏检。")
+            print("  平台覆盖：齐全")
+
+        shortfalls = [
+            f"{item['id']}（要求 {item['min_queries']} 个不同查询，实际 {per_qp.get(item['id'], 0)} 个）"
+            for item in plan["qps"]
+            if per_qp.get(item["id"], 0) < item["min_queries"]
+        ]
+        if shortfalls:
+            print(f"  检索位不足：{'、'.join(shortfalls)}")
+        else:
+            print("  检索位覆盖：达标")
+    elif rows:
+        print("\n[警告] 未提供 --plan，只能看已记录内容，无法判断是否有平台或检索位漏检。")
 
     return 0
 
@@ -688,6 +847,7 @@ def build_parser() -> argparse.ArgumentParser:
     update.add_argument("--qp", required=True, help="检索位 ID（如 QP1）或完整查询词")
     update.add_argument("--city", required=True, help="城市")
     update.add_argument("--inbound", required=True, help="入库数（非负整数）")
+    update.add_argument("--dry-run", action="store_true", help="只预览旧值 → 新值，不写入")
     update.set_defaults(func=cmd_update)
 
     audit = sub.add_parser("audit", help="按日期审计覆盖情况（只读）")
