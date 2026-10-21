@@ -38,7 +38,7 @@ description: Use when 需要对某岗位域/职能做持续研究（岗位能力
 5. 强度守恒：证据不足时写"当前证据不足"，不补全。
 6. 采集与筛选口径（默认）：关注过去 24 小时，必要时回溯 3 天；每日 3–5 个重要信号，同源合并；筛选判据见 `references/signal-selection.md`；岗位域的「信号优先类别」见 `research-state.md`。
 7. 数据层：信号库目录与文件命名由 `research-state.md` 声明（默认 `YYYY-MM-DD-日报.md`）。
-8. 待验证问题回写：O1 完成后逐条更新 research-state.md §四的「本期进展」「下一步验证」；有新证据写结论+核心证据+强度，无变化写“无变化（本轮未获新证据）”；O1 不改状态，状态由 O3 改。
+8. 待验证问题回写：O1 完成后逐条更新 research-state.md §四的「本期进展」「下一步验证」；有新证据写结论+核心证据+强度，无变化写“YYYY-MM-DD：无变化（本轮未获新证据）”；O1 不改状态，状态由 O3 改。
 
 ## 默认风格（可被 `research-state.md` 输出偏好覆盖）
 - 中文；结论先行；简明、清晰、具体；战略分析而非新闻摘要。
@@ -75,21 +75,28 @@ description: Use when 需要对某岗位域/职能做持续研究（岗位能力
 4. 产出日报 → `signal-daily.template.md`
    读取覆盖与库变化，写 O1
 
-边界：扫描不写库；核验不改分；维护不搜索；日报不改库。
+边界：扫描不写库；核验不改分；维护不重新检索；refresh 只核验既有岗位详情页；日报不改库。
+
+## O2a 运行检查单（按序执行）
+
+1. 先读字段规格：`python3 coverage_tool.py describe`。
+2. 按 `research-state.md` §二矩阵执行 query；逐条 `append` 到覆盖台账。
+3. 收尾运行 `coverage_tool.py audit --date YYYY-MM-DD --plan plan.json`；`plan.json` 由 §二矩阵生成（`platforms` + `qps[].min_queries`）。
+4. O2b 完成后用 `coverage_tool.py update` 回填 `入库数`。
 
 ## O2b 运行检查单（按序执行）
 
 1. 先读字段规格：`python3 jd_tool.py describe`（字段名、取值、写入规则以它为准）。
 2. 按规格入库 / 刷新 / 失效 / 去重排序；重复项默认合并来源，重新发布必须带证据。
-3. 收尾先 `audit`，确认无新增问题。
-4. 最后写一行运行级日志：`python3 jd_tool.py log --change "..." --reason "..."`（4 列：日期 / 变更项 / 统计 / 原因）。
+3. 写一行运行级日志：`python3 jd_tool.py log --change "..." --reason "..."`（4 列：日期 / 变更项 / 统计 / 原因）。
+4. 收尾运行 `audit --strict`，确认日志统计与当前库一致、无新增问题。
 
 ## 交付清单（缺任一项 = 本轮未完成，不得宣称完成）
 | 产出 | 完成判据 |
 |---|---|
 | O1 信号日报 | 3–5 条 ×（证据等级 E1–E5 + Evidence / Why it matters / Career Implication / Counterevidence / Experiment）；今日学习建议 3 问；今日 JD 扫描报告；发布日期精确到日（月/年须标"日未披露"）；待验证问题表已逐条判断并回写（无变化已注明） |
-| O2a 岗位扫描采集 | 检索位矩阵全部 query 执行；平台覆盖台账逐平台有状态 |
-| O2b 岗位数据维护 | 新增 / 刷新 / 失效；`全部来源` 已合并；迭代日志 4 列已写入且统计与当前库一致；`audit` 通过 |
+| O2a 岗位扫描采集 | 检索位矩阵全部 query 执行；平台覆盖台账逐平台有状态；覆盖审计已运行，缺失/受限/未执行已报告 |
+| O2b 岗位数据维护 | 新增 / 刷新 / 失效；`全部来源` 已合并；迭代日志 4 列已写入且统计与当前库一致；`log` 后 `audit --strict` 通过 |
 | O3 定位校准 | ①–④；支持↔反证同框；只写相较上期变化；回写 `research-state.md` |
 | O4 趋势报告 | ①–④；多方向横比；证据等级 |
 

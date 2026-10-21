@@ -25,6 +25,14 @@
 - 同一 `平台 + 检索位 + 城市 + 日期` 默认只允许一行。
 - 字段口径与校验以 `python3 coverage_tool.py describe` 输出为准；写入由 `coverage_tool.py append` 完成。
 
+### 覆盖审计
+
+- 每轮扫描后运行：`python3 coverage_tool.py audit --date YYYY-MM-DD --plan plan.json`。
+- `plan.json` 由 `research-state.md` §二矩阵生成：
+  `{"platforms": ["猎聘", "智联招聘"], "qps": [{"id": "QP1", "min_queries": 2}]}`
+- 审计报告：缺失平台、QP 查询数不足、受限、零结果、待回填 `入库数`、重复行。
+- 未提供 `--plan` 时只能报告观测值，不能判断漏检；覆盖不足仍必须在交接中说明。
+
 ## 四、候选发现
 - 关键词子串命中 → 进入候选池；记录对应检索位与查询词。
 - 候选只代表线索，不代表合格，不得直接入库。

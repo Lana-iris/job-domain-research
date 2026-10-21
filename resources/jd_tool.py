@@ -1037,6 +1037,26 @@ def cmd_audit(bk: Book, args):
     if bad_vals:
         problems += 1
 
+    # 3d) 全部来源：非空时必须是「平台|URL；平台|URL」，且包含原文链接
+    print("\n[3d] 全部来源（非空时须含原文链接）")
+    src_bad = []
+    for r, v in arows:
+        raw = v.get("全部来源")
+        if raw in (None, ""):
+            continue
+        jid = v.get("去重ID")
+        prob = sources_problem(raw)
+        if prob:
+            src_bad.append(f"{jid}·全部来源（{prob}）")
+            continue
+        link = str(v.get("原文链接") or "").strip()
+        urls = [u for _, u in parse_sources(raw)]
+        if link and link not in urls:
+            src_bad.append(f"{jid}·全部来源 未包含原文链接 {link[:50]}")
+    print(f"  问题 {len(src_bad)} 处" + (f"：{src_bad[:6]}" if src_bad else ""))
+    if src_bad:
+        problems += 1
+
     # 4) 权重自检（用存储的 R/C/F/Ci/可达性 重算综合分）
     print("\n[4] 权重公式自检（重算 vs 存储）")
     bad = []
@@ -1190,6 +1210,8 @@ def cmd_audit(bk: Book, args):
         if not log_rows:
             if active_now or dead_now:
                 print("  ⚠ 有数据但无迭代日志行；请运行 log 补写本次运行")
+                if args.strict:
+                    problems += 1
         else:
             last = log_rows[-1][1]
             log_bad = []
@@ -1607,7 +1629,7 @@ def cmd_purge(bk: Book, args):
 
     ha = bk.hdr_a()
     hd = bk.hdr_d()
-    # 失效表列一律按表头名确保存在（不再硬编码 col33/col34）
+    # 失效表列一律按表头名确保存在
     for name in ha:
         if name not in hd:
             Book.ensure_column(bk.dead, name)

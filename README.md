@@ -27,7 +27,7 @@ git clone https://github.com/Lana-iris/job-domain-research.git ~/.config/opencod
 
 ## 岗位库工具（O2b）
 
-字段规格以工具内置 `FIELD_SPEC` 为唯一真源（原 `references/jd-library-fields.md` 已移除）：
+字段规格以工具内置 `FIELD_SPEC` 为唯一真源：
 
 ```bash
 python3 resources/jd_tool.py describe                 # Markdown 字段表
@@ -51,7 +51,26 @@ python3 resources/jd_tool.py --workbook <路径> log --change "新增 JD270–JD
 - **重新发布需证据**：`--allow-repost` 必须搭配 `--repost-evidence`，证据含原 JD、核实日期与状态。
 - **刷新需证据**：首选 `refresh --evidence`（仅在招/可投更新最后发现日期）；手工路径须 `--confirm-visible --reason`。
 - **运行级迭代日志**：日志固定 4 列（日期 / 变更项 / 统计 / 原因），一次 O2b 运行由 `log` 写一行，其它写操作不再自动追加。
-- **列按表头定位**：失效表 `失效日期` / `失效原因` / `全部来源` 均按表头名补齐，不再硬编码第 33/34 列。
+- **列按表头定位**：失效表 `失效日期` / `失效原因` / `全部来源` 均按表头名补齐。
+
+## 覆盖台账工具（O2a）
+
+字段规格以工具内置 `COVERAGE_SPEC` 为唯一真源：
+
+```bash
+python3 resources/coverage_tool.py describe
+python3 resources/coverage_tool.py --workbook <路径> append scan.json
+python3 resources/coverage_tool.py --workbook <路径> update --date 2026-10-21 --platform 猎聘 --qp QP1 --city 深圳 --inbound 2
+python3 resources/coverage_tool.py --workbook <路径> audit --date 2026-10-21 --plan plan.json
+```
+
+`plan.json` 由 `research-state.md` §二矩阵生成：
+
+```json
+{"platforms": ["猎聘", "智联招聘"], "qps": [{"id": "QP1", "min_queries": 2}]}
+```
+
+`audit` 报告缺失平台、QP 查询数不足、受限、零结果与待回填入库数；无 `--plan` 时只能报告观测值，不能判断漏检。
 
 ## 依赖
 
