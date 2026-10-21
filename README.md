@@ -2,7 +2,7 @@
 
 对指定岗位域持续采集公开信号与真实招聘信息，按证据强度分级，产出带反证与验证实验的周期性研究输出，并维护可追溯的岗位数据。
 
-当前版本：**0.2.0**
+当前版本：**0.4.0**
 
 ## 安装
 
@@ -44,7 +44,7 @@ python3 resources/jd_tool.py --workbook <路径> purge --apply
 python3 resources/jd_tool.py --workbook <路径> log --change "新增 JD270–JD272" --reason "日常扫描"
 ```
 
-### 0.2.0 行为变化
+### 0.4.0 行为变化
 
 - **14 个必填字段**：`add` / `audit` 按同一份 `FIELD_SPEC` 校验 14 项必填输入；`--strict` 额外要求 3 个分析字段（Market Signal / Portfolio Relevance / Portfolio Benchmark）。
 - **去重与合并来源**：活跃表命中严格键或归一化键即视为重复；默认把新来源合并进 `全部来源`（`--no-merge-sources` 可关闭），不再新增行。
