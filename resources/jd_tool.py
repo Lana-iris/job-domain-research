@@ -7,11 +7,16 @@ jd_tool.py — JD 活跃库维护工具（通用）
 同一套去重 / 失效 / 备份 / 重排逻辑，只写一次，不再每天重抄。
 
 用法：
-    python3 jd_tool.py --workbook <路径> audit                 # 只读体检，不改数据
-    python3 jd_tool.py --workbook <路径> add new.json          # 追加当日新 JD（JSON 数组）
-    python3 jd_tool.py --workbook <路径> add new.json --strict # strict 四列缺任一即拒收
-    python3 jd_tool.py --workbook <路径> add new.json --r-unknown 0.4  # 覆盖「发布日期未知」时的 R
-    python3 jd_tool.py --workbook <路径> refresh --ids JD251,JD256   # 刷新「最后发现日期」
+    python3 jd_tool.py describe [--format markdown|json]      # 字段规格（唯一真源）
+    python3 jd_tool.py --workbook <路径> audit                # 只读体检，不改数据
+    python3 jd_tool.py --workbook <路径> add new.json         # 追加当日新 JD（JSON 数组）
+    python3 jd_tool.py --workbook <路径> add new.json --strict # strict 三列缺任一即拒收
+    python3 jd_tool.py --workbook <路径> add new.json --no-merge-sources  # 重复时不合并来源
+    python3 jd_tool.py --workbook <路径> add new.json --allow-repost \
+        --repost-evidence repost.json                         # 重新发布（必须带证据）
+    python3 jd_tool.py --workbook <路径> refresh --evidence refresh.json  # 首选：带证据刷新
+    python3 jd_tool.py --workbook <路径> refresh --ids JD251,JD256 \
+        --confirm-visible --reason "详情页可见"               # 手工刷新（必须确认可见）
     python3 jd_tool.py --workbook <路径> purge                 # 超期移入失效（默认只预览）
     python3 jd_tool.py --workbook <路径> purge --apply         # 真正执行
     python3 jd_tool.py --workbook <路径> sort                  # 按综合优先级分降序（默认只预览）
@@ -22,13 +27,13 @@ jd_tool.py — JD 活跃库维护工具（通用）
     python3 jd_tool.py --workbook <路径> recompute             # 按存量输入列重算分值（默认只预览）
     python3 jd_tool.py --workbook <路径> recompute --apply
     python3 jd_tool.py --workbook <路径> backup                # 手动备份
+    python3 jd_tool.py --workbook <路径> log --change "新增 JD270–JD272" \
+        --reason "日常扫描" [--before-active N --before-dead M] [--dry-run]
 
     --workbook 默认当前目录下的「JD扫描-活跃库.xlsx」；--config 可覆盖默认规格（见下）。
 
 规则真源：见本技能 references/jd-maintenance-rules.md（权重/失效/文件策略等默认）。
-本工具只是它的可执行实现，不新增规则。
-每次写操作保存前自动向「迭代日志」sheet 追加一行（日期 / 变更项 / 旧值 / 新值 / 原因）；
-工作簿无该 sheet 时只打印警告，不阻断保存。
+字段规格真源：本文件 FIELD_SPEC，describe 直接由它生成；add / audit 用同一份规格校验。
 
 R 时效「未知」口径（2026-10-16 用户裁定）：
     未知取 0.4（与 >90 天同级，不把「发布日期不明」当成新鲜）；
@@ -37,9 +42,14 @@ R 时效「未知」口径（2026-10-16 用户裁定）：
 设计要点
 - 列一律按「表头名」定位，绝不按列号硬编码（2026-09-22 曾因列号错位漏了 10 条）。
 - 任何写操作前自动备份到工作簿同目录下的 `备份/`。
-- purge / sort / repair / set / recompute 默认 dry-run，必须显式 --apply 才落盘。
-- add 默认只校验 5 个必填输入列；加 --strict 时还要求 strict 四列全部非空。
-- 失效表的 col33/col34 是「失效日期 / 失效原因」（无表头），迁移时写入这两列。
+- purge / sort / repair / set / recompute 默认 dry-run，必须显式 --apply 才落盘；
+  add / refresh 即时写入；audit 只读；log 写一行运行级日志（默认即写入，--dry-run 预览）。
+- add 默认校验 14 个必填输入列；加 --strict 时还要求分析三列（Market Signal /
+  Portfolio Relevance / Portfolio Benchmark）非空。校验口径见 FIELD_SPEC。
+- 活跃表命中严格键或归一化键 → 视为重复；默认把新来源合并进 `全部来源`，不新增行。
+- 失效表命中同样视为重复；重新发布必须 `--allow-repost` + `--repost-evidence` 同时具备。
+- 迭代日志为「一次运行一行」的 4 列（日期 / 变更项 / 统计 / 原因），由 `log` 显式写入；
+  其它子命令不再自动追加日志。
 - 查重同时用「严格键」与「归一化键」（公司名剥离尾部标注 + 城市取主体）；
   归一化**只用于查重，不改写表内原始值**（2026-10-14 新增，修 JD262/JD182 类漏判）。
 """
@@ -54,6 +64,7 @@ import re
 import shutil
 import sys
 from pathlib import Path
+from typing import Any
 
 try:
     import openpyxl
@@ -89,11 +100,384 @@ def load_config(path):
 # 运行时生效的规格（main 中按 --config 重置）
 CONFIG = _copy.deepcopy(DEFAULT_CONFIG)
 
-# 综合优先级分必填的输入列（用于 add 校验与 audit 重算）
-REQUIRED_INPUTS = ["公司名称", "职位名称", "工作城市", "契合度(1-5)", "当前可达性(1-5)"]
 
-# add --strict 要求全部非空的四列（规则 §二；空则拒收）
-STRICT_COLS = ["岗位/职能专有能力要求", "Market Signal", "Portfolio Relevance", "Portfolio Benchmark"]
+# ---------------------------------------------------------------- 字段规格（唯一真源）
+#
+# 分组：
+#   必填输入      —— 入库时必须非空（共 14 项）
+#   严格分析输入  —— 仅 --strict / audit --strict 要求非空（共 3 项）
+#   可选          —— 有则写，无则留空
+#   生成          —— 由 add / recompute 计算，禁止从 JSON 输入
+#   失效表        —— 只在失效表出现
+
+GROUP_REQUIRED = "必填输入"
+GROUP_STRICT = "严格分析输入"
+GROUP_OPTIONAL = "可选"
+GROUP_GENERATED = "生成"
+GROUP_DEAD = "失效表"
+
+FIELD_SPEC: list[dict[str, Any]] = [
+    {
+        "name": "去重ID",
+        "meaning": "库内唯一编号",
+        "group": GROUP_GENERATED,
+        "required": "系统生成",
+        "type": "JD+数字",
+        "write_rule": "由 add 按现有最大编号 +1 生成，禁止手填或从 JSON 传入",
+        "example": "JD270",
+    },
+    {
+        "name": "抓取日期",
+        "meaning": "本条首次入库的业务日期",
+        "group": GROUP_GENERATED,
+        "required": "系统生成",
+        "type": "YYYY-MM-DD",
+        "write_rule": "由 add 写入 --today（业务日），不随刷新变化",
+        "example": "2026-10-21",
+    },
+    {
+        "name": "来源平台",
+        "meaning": "最优单一来源平台",
+        "group": GROUP_REQUIRED,
+        "required": "是",
+        "type": "非空文本（平台名）",
+        "write_rule": "写平台本名，如猎聘、BOSS直聘；多平台合并只保留最优来源",
+        "example": "猎聘",
+    },
+    {
+        "name": "公司名称",
+        "meaning": "招聘方 / 雇主",
+        "group": GROUP_REQUIRED,
+        "required": "是",
+        "type": "非空文本",
+        "write_rule": "写招聘页上的公司名；括号标注可保留，归一化只用于查重",
+        "example": "某科技公司",
+    },
+    {
+        "name": "公司行业分",
+        "meaning": "行业与目标领域的匹配度",
+        "group": GROUP_REQUIRED,
+        "required": "是",
+        "type": "0.5 / 0.8 / 1.0 / 未知",
+        "write_rule": "只能取 0.5、0.8、1.0；不明写「未知」（计分按 0.5）",
+        "example": "1.0",
+    },
+    {
+        "name": "公司梯队分",
+        "meaning": "公司梯队 / 规模评分",
+        "group": GROUP_REQUIRED,
+        "required": "是",
+        "type": "0.6–1.0 数字 / 未知",
+        "write_rule": "0.6–1.0 的数字（大厂 1.0、外企 0.9、中厂 0.8、创业 0.6）；不明写「未知」（计分按 0.7）",
+        "example": "0.8",
+    },
+    {
+        "name": "职位名称",
+        "meaning": "岗位名称（含批次/层级差异）",
+        "group": GROUP_REQUIRED,
+        "required": "是",
+        "type": "非空文本",
+        "write_rule": "原样抄录职位名；校招/社招、层级差异写入职位名称，不新增字段",
+        "example": "AI 产品经理",
+    },
+    {
+        "name": "工作城市",
+        "meaning": "岗位所在城市",
+        "group": GROUP_REQUIRED,
+        "required": "是",
+        "type": "非空文本",
+        "write_rule": "写城市主体（如「北京」）；区/商圈可附「-」，归一化只用于查重",
+        "example": "北京",
+    },
+    {
+        "name": "经验要求",
+        "meaning": "经验年限要求",
+        "group": GROUP_OPTIONAL,
+        "required": "否",
+        "type": "文本",
+        "write_rule": "照原文摘要，如「3–5 年」；未写明可留空",
+        "example": "3–5 年",
+    },
+    {
+        "name": "学历要求",
+        "meaning": "学历门槛",
+        "group": GROUP_OPTIONAL,
+        "required": "否",
+        "type": "文本",
+        "write_rule": "照原文写，如「本科」「硕士优先」",
+        "example": "本科",
+    },
+    {
+        "name": "薪资范围(原文)",
+        "meaning": "招聘页原始薪资",
+        "group": GROUP_OPTIONAL,
+        "required": "否",
+        "type": "文本",
+        "write_rule": "照抄原文，不改写单位",
+        "example": "30–50k·15薪",
+    },
+    {
+        "name": "薪资标准化(万/年)",
+        "meaning": "换算后的年薪（万元）",
+        "group": GROUP_OPTIONAL,
+        "required": "否",
+        "type": "数字（万/年）",
+        "write_rule": "按原文中值折算为万元/年；无法折算留空",
+        "example": "45",
+    },
+    {
+        "name": "发布日期",
+        "meaning": "岗位发布日",
+        "group": GROUP_REQUIRED,
+        "required": "是",
+        "type": "YYYY-MM-DD / YYYY-MM（日未披露） / 未知",
+        "write_rule": "优先精确到日；仅月/年写 YYYY-MM（日未披露）；拿不到写「未知」（R=0.4）",
+        "example": "2026-10-16",
+    },
+    {
+        "name": "截止日期",
+        "meaning": "投递截止日",
+        "group": GROUP_OPTIONAL,
+        "required": "否",
+        "type": "YYYY-MM-DD / YYYY-MM（日未披露）",
+        "write_rule": "与发布日期同格式；多为估算，不据此自动清理",
+        "example": "2026-11-01",
+    },
+    {
+        "name": "首次发现日期",
+        "meaning": "首次被本库记录的日期",
+        "group": GROUP_GENERATED,
+        "required": "系统生成",
+        "type": "YYYY-MM-DD",
+        "write_rule": "由 add 写入 --today，之后不再改动",
+        "example": "2026-10-21",
+    },
+    {
+        "name": "最后发现日期",
+        "meaning": "最近一次核实仍在招/可投的日期",
+        "group": GROUP_GENERATED,
+        "required": "系统生成",
+        "type": "YYYY-MM-DD",
+        "write_rule": "仅 refresh 在「在招/可投」证据下更新；>14 天未更新会被 purge",
+        "example": "2026-10-21",
+    },
+    {
+        "name": "核心职责",
+        "meaning": "岗位职责摘要",
+        "group": GROUP_REQUIRED,
+        "required": "是",
+        "type": "非空文本",
+        "write_rule": "摘要 2–4 条职责，不整段照抄",
+        "example": "负责 AI 产品规划与落地",
+    },
+    {
+        "name": "AI·数字化技能要求",
+        "meaning": "岗位要求的 AI / 数字化能力",
+        "group": GROUP_REQUIRED,
+        "required": "是",
+        "type": "非空文本",
+        "write_rule": "摘要原文中的 AI / 数据 / 数字化技能要求",
+        "example": "熟悉大模型应用与数据分析",
+    },
+    {
+        "name": "岗位/职能专有能力要求",
+        "meaning": "该岗位域的专业能力要求",
+        "group": GROUP_REQUIRED,
+        "required": "是",
+        "type": "非空文本",
+        "write_rule": "写领域专有能力，不写通用软技能",
+        "example": "具备 B 端产品方法论",
+    },
+    {
+        "name": "人才标准信号",
+        "meaning": "招聘方衡量人才的显性/隐性标准",
+        "group": GROUP_OPTIONAL,
+        "required": "否",
+        "type": "文本",
+        "write_rule": "摘录能反映人才标准的原句或推断，标注推断",
+        "example": "偏好有 0→1 经验者",
+    },
+    {
+        "name": "契合度(1-5)",
+        "meaning": "与个人主方向的契合程度",
+        "group": GROUP_REQUIRED,
+        "required": "是",
+        "type": "整数 1–5",
+        "write_rule": "按主方向判断，写 1–5 的整数",
+        "example": "4",
+    },
+    {
+        "name": "当前可达性(1-5)",
+        "meaning": "以当前资历投进的可行性",
+        "group": GROUP_REQUIRED,
+        "required": "是",
+        "type": "整数 1–5",
+        "write_rule": "不等于契合度；随产出物推进应逐月上升，写 1–5 的整数",
+        "example": "3",
+    },
+    {
+        "name": "时效权重R",
+        "meaning": "按发布日计算的时效分",
+        "group": GROUP_GENERATED,
+        "required": "系统生成",
+        "type": "0.3–1.0（未知=0.4）",
+        "write_rule": "≤7 天 1.0；8–30 天 0.75；31–90 天 0.5；>90 天 0.3；未知 0.4",
+        "example": "1.0",
+    },
+    {
+        "name": "公司权重C",
+        "meaning": "公司维度得分",
+        "group": GROUP_GENERATED,
+        "required": "系统生成",
+        "type": "0–1",
+        "write_rule": "C = 0.6×行业分 + 0.4×梯队分（未知分别按 0.5 / 0.7）",
+        "example": "0.92",
+    },
+    {
+        "name": "契合权重F",
+        "meaning": "契合度归一化分",
+        "group": GROUP_GENERATED,
+        "required": "系统生成",
+        "type": "0–1",
+        "write_rule": "F = 契合度(1–5) / 5",
+        "example": "0.8",
+    },
+    {
+        "name": "城市权重Ci",
+        "meaning": "城市维度得分",
+        "group": GROUP_GENERATED,
+        "required": "系统生成",
+        "type": "0–1",
+        "write_rule": "深/广/杭 1.0；北/上/港/远程 0.9；其他 0.5（可由 --config 覆盖）",
+        "example": "0.9",
+    },
+    {
+        "name": "综合优先级分",
+        "meaning": "库内排序分",
+        "group": GROUP_GENERATED,
+        "required": "系统生成",
+        "type": "0–100",
+        "write_rule": "100×(0.30R + 0.28C + 0.22F + 0.10Ci + 0.10A)，仅用于内部排序",
+        "example": "88.4",
+    },
+    {
+        "name": "Market Signal",
+        "meaning": "市场为何种能力付费",
+        "group": GROUP_STRICT,
+        "required": "是（--strict）",
+        "type": "非空文本",
+        "write_rule": "写市场信号判断，不写空泛描述；--strict 时缺则拒收",
+        "example": "企业愿为 AI 落地能力付溢价",
+    },
+    {
+        "name": "Portfolio Relevance",
+        "meaning": "对个人产出物的参考价值",
+        "group": GROUP_STRICT,
+        "required": "是（--strict）",
+        "type": "非空文本",
+        "write_rule": "写该岗位对作品集的参考点；--strict 时缺则拒收",
+        "example": "可复用其 B 端案例结构",
+    },
+    {
+        "name": "Portfolio Benchmark",
+        "meaning": "需要用作品证明什么",
+        "group": GROUP_STRICT,
+        "required": "是（--strict）",
+        "type": "非空文本",
+        "write_rule": "写作品需覆盖的能力证据；--strict 时缺则拒收",
+        "example": "需证明 0→1 落地能力",
+    },
+    {
+        "name": "标签",
+        "meaning": "状态 / 主题标签",
+        "group": GROUP_OPTIONAL,
+        "required": "否",
+        "type": "文本",
+        "write_rule": "自由标签，多个用「；」分隔",
+        "example": "高信号；AI",
+    },
+    {
+        "name": "定位启发",
+        "meaning": "对职业定位的启发",
+        "group": GROUP_OPTIONAL,
+        "required": "否",
+        "type": "文本",
+        "write_rule": "写一句话启发，区分事实 / 推断",
+        "example": "可转向 AI 解决方案岗",
+    },
+    {
+        "name": "关键词命中",
+        "meaning": "命中的检索关键词",
+        "group": GROUP_REQUIRED,
+        "required": "是",
+        "type": "非空文本",
+        "write_rule": "写实际命中的检索词，多个用「；」分隔",
+        "example": "AI 产品经理",
+    },
+    {
+        "name": "原文链接",
+        "meaning": "岗位详情页证据链接",
+        "group": GROUP_REQUIRED,
+        "required": "是",
+        "type": "http(s) URL",
+        "write_rule": "写详情页 URL，不写搜索页或聚合页",
+        "example": "https://example.com/job/123",
+    },
+    {
+        "name": "全部来源",
+        "meaning": "同岗多平台来源汇总",
+        "group": GROUP_OPTIONAL,
+        "required": "否",
+        "type": "平台|URL；平台|URL",
+        "write_rule": "最优来源在前；为空时用「来源平台|原文链接」初始化；同 URL 不重复追加",
+        "example": "猎聘|https://a.example/job/1；BOSS直聘|https://b.example/job/2",
+    },
+    {
+        "name": "备注/质量说明",
+        "meaning": "自由备注与质量标记",
+        "group": GROUP_OPTIONAL,
+        "required": "否",
+        "type": "文本",
+        "write_rule": "写数据质量说明、日报来源、重新发布等标记",
+        "example": "【来自日报】",
+    },
+    {
+        "name": "失效日期",
+        "meaning": "移入失效表的日期",
+        "group": GROUP_DEAD,
+        "required": "失效时必填",
+        "type": "YYYY-MM-DD",
+        "write_rule": "由 purge 写入业务日；按表头名定位，不按列号",
+        "example": "2026-10-21",
+    },
+    {
+        "name": "失效原因",
+        "meaning": "判定失效的依据",
+        "group": GROUP_DEAD,
+        "required": "失效时必填",
+        "type": "非空文本",
+        "write_rule": "由 purge 写入，如「最后发现 … 距今 >14 天未再发现」",
+        "example": "最后发现 2026-09-30，距今 >14 天未再发现",
+    },
+]
+
+# add / audit 的必填与 strict 清单都从 FIELD_SPEC 派生，避免维护第二份名单
+REQUIRED_INPUTS = [f["name"] for f in FIELD_SPEC if f["group"] == GROUP_REQUIRED]
+STRICT_INPUTS = [f["name"] for f in FIELD_SPEC if f["group"] == GROUP_STRICT]
+GENERATED_FIELDS = [f["name"] for f in FIELD_SPEC if f["group"] == GROUP_GENERATED]
+OPTIONAL_FIELDS = [f["name"] for f in FIELD_SPEC if f["group"] == GROUP_OPTIONAL]
+DEAD_FIELDS = [f["name"] for f in FIELD_SPEC if f["group"] == GROUP_DEAD]
+
+# 「未知」只允许出现在这三个必填字段
+UNKNOWN_OK = {"发布日期", "公司行业分", "公司梯队分"}
+INDUSTRY_ALLOWED = {0.5, 0.8, 1.0}
+DEFAULT_INDUSTRY = 0.5
+DEFAULT_TIER = 0.7
+
+URL_RE = re.compile(r"https?://\S+", re.I)
+DATE_FULL_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
+DATE_MONTH_RE = re.compile(r"\d{4}-\d{2}（日未披露）")
+SOURCES_SPLIT_RE = re.compile(r"[；;]")
 
 
 def _rel(p: Path) -> str:
@@ -106,7 +490,10 @@ def _rel(p: Path) -> str:
 # ---------------------------------------------------------------- 日期
 
 def parse_date(v):
-    """容错解析：datetime / date / '2026-10-07' / '2026-07-31(更新)' / '2026-09' / '2026'。"""
+    """容错解析：datetime / date / '2026-10-07' / '2026-07-31(更新)' / '2026-09' / '2026'。
+
+    解析失败（如 2026-13-40）返回 None，不抛异常。
+    """
     if isinstance(v, dt.datetime):
         return v.date()
     if isinstance(v, dt.date):
@@ -114,16 +501,43 @@ def parse_date(v):
     if v is None:
         return None
     s = str(v).strip()
-    m = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", s)          # 2026-10-07（可带括号后缀）
-    if m:
-        return dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-    m = re.match(r"(\d{4})-(\d{1,2})(?!\d)", s)              # 2026-09
-    if m:
-        return dt.date(int(m.group(1)), int(m.group(2)), 1)
-    m = re.match(r"(\d{4})(?!\d)", s)                        # 2026
-    if m:
-        return dt.date(int(m.group(1)), 1, 1)
+    try:
+        m = re.match(r"(\d{4})-(\d{1,2})-(\d{1,2})", s)          # 2026-10-07（可带括号后缀）
+        if m:
+            return dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        m = re.match(r"(\d{4})-(\d{1,2})(?!\d)", s)              # 2026-09
+        if m:
+            return dt.date(int(m.group(1)), int(m.group(2)), 1)
+        m = re.match(r"(\d{4})(?!\d)", s)                        # 2026
+        if m:
+            return dt.date(int(m.group(1)), 1, 1)
+    except ValueError:
+        return None
     return None
+
+
+def date_value_problem(v, allow_unknown=False):
+    """检查单元格日期写法；正常返回 None，否则返回问题描述。"""
+    if isinstance(v, (dt.datetime, dt.date)):
+        return None
+    s = str(v or "").strip()
+    if not s:
+        return None
+    if s == "未知":
+        return None if allow_unknown else "不允许「未知」"
+    if DATE_FULL_RE.fullmatch(s):
+        try:
+            dt.date.fromisoformat(s)
+            return None
+        except ValueError:
+            return "日期不存在"
+    if DATE_MONTH_RE.fullmatch(s):
+        return None
+    if re.fullmatch(r"\d{4}", s):
+        return "裸年份（应写 YYYY-MM（日未披露）或 YYYY-MM-DD）"
+    if re.fullmatch(r"\d{4}-\d{1,2}", s):
+        return "仅有月份（应写 YYYY-MM（日未披露））"
+    return "格式不符（应为 YYYY-MM-DD / YYYY-MM（日未披露））"
 
 
 def r_weight(pub, scan, unknown=0.4):
@@ -168,6 +582,114 @@ def total_score(R, C, F, Ci, A):
     """
     w = CONFIG["weights"]
     return round(100 * (w["R"] * R + w["C"] * C + w["F"] * F + w["Ci"] * Ci + w["A"] * A), 1)
+
+
+def resolve_company_scores(industry, tier):
+    """行业分 / 梯队分「未知」时按默认值计分；返回 (industry, tier, 用了默认值的字段)。"""
+    used = []
+    ind = _as_num(industry)
+    if ind is None:
+        ind = DEFAULT_INDUSTRY
+        used.append("公司行业分")
+    t = _as_num(tier)
+    if t is None:
+        t = DEFAULT_TIER
+        used.append("公司梯队分")
+    return ind, t, used
+
+
+# ---------------------------------------------------------------- 值校验
+
+def _as_num(v):
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    try:
+        return float(str(v).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _int_1_5(v):
+    """把 1–5 的整数（含数字字符串）转成 int；否则返回 None。"""
+    if isinstance(v, bool):
+        return None
+    n = None
+    if isinstance(v, int):
+        n = v
+    elif isinstance(v, float) and v.is_integer():
+        n = int(v)
+    elif isinstance(v, str) and re.fullmatch(r"[1-5]", v.strip()):
+        n = int(v.strip())
+    return n if (n is not None and 1 <= n <= 5) else None
+
+
+def sources_problem(v):
+    """检查 全部来源 的「平台|URL；平台|URL」格式。"""
+    s = str(v or "").strip()
+    if not s:
+        return None
+    for part in SOURCES_SPLIT_RE.split(s):
+        part = part.strip()
+        if not part:
+            continue
+        if "|" not in part:
+            return "应为「平台|URL；平台|URL」"
+        plat, url = part.split("|", 1)
+        if not plat.strip():
+            return "来源平台为空"
+        if not URL_RE.fullmatch(url.strip()):
+            return f"来源链接不是 http(s)：{url.strip()[:40]}"
+    return None
+
+
+def validate_item(it, strict=False):
+    """按 FIELD_SPEC 校验一条待入库 JSON；返回错误列表（空 = 通过）。"""
+    errs = []
+    for name in REQUIRED_INPUTS:
+        raw = it.get(name)
+        s = "" if raw is None else str(raw).strip()
+        if not s or (s == "未知" and name not in UNKNOWN_OK):
+            errs.append(f"缺少必填 {name}")
+    if strict:
+        for name in STRICT_INPUTS:
+            if it.get(name) in (None, "") or not str(it.get(name)).strip():
+                errs.append(f"strict 缺列 {name}")
+
+    ind = it.get("公司行业分")
+    if ind not in (None, "") and str(ind).strip() != "未知":
+        n = _as_num(ind)
+        if n is None or n not in INDUSTRY_ALLOWED:
+            errs.append(f"公司行业分 只能 0.5/0.8/1.0/未知，实际 {ind!r}")
+
+    tier = it.get("公司梯队分")
+    if tier not in (None, "") and str(tier).strip() != "未知":
+        n = _as_num(tier)
+        if n is None or not (0.6 <= n <= 1.0):
+            errs.append(f"公司梯队分 应为 0.6–1.0 数字或「未知」，实际 {tier!r}")
+
+    for name in ("契合度(1-5)", "当前可达性(1-5)"):
+        raw = it.get(name)
+        if raw not in (None, "") and _int_1_5(raw) is None:
+            errs.append(f"{name} 应为 1–5 的整数，实际 {raw!r}")
+
+    url = it.get("原文链接")
+    if url not in (None, "") and not URL_RE.fullmatch(str(url).strip()):
+        errs.append(f"原文链接 必须是 http(s) URL，实际 {str(url)[:60]!r}")
+
+    for name in ("发布日期", "截止日期"):
+        raw = it.get(name)
+        if raw in (None, ""):
+            continue
+        prob = date_value_problem(raw, allow_unknown=(name == "发布日期"))
+        if prob:
+            errs.append(f"{name} {prob}：{raw!r}")
+
+    prob = sources_problem(it.get("全部来源"))
+    if prob:
+        errs.append(f"全部来源 {prob}")
+    return errs
 
 
 # ---------------------------------------------------------------- 去重键归一化
@@ -226,6 +748,11 @@ def key_norm(d):
 
 # ---------------------------------------------------------------- 工作簿
 
+LOG_SHEET = "迭代日志"
+LOG_COLS = ["日期", "变更项", "统计", "原因"]
+LOG_STATS_RE = re.compile(r"活跃(\d+)→(\d+)，失效(\d+)→(\d+)")
+
+
 class Book:
     def __init__(self, path: Path):
         if not path.exists():
@@ -262,6 +789,25 @@ class Book:
                 out.append((r, vals))
         return out
 
+    @staticmethod
+    def ensure_column(ws, name):
+        """按表头名确保列存在；缺失时追加到末尾并复制表头样式。返回列号。"""
+        hdr = Book._header_index(ws)
+        if name in hdr:
+            return hdr[name]
+        col = ws.max_column + 1
+        ws.cell(1, col).value = name
+        src = ws.cell(1, 1)
+        dst = ws.cell(1, col)
+        dst.font = _copy.copy(src.font)
+        dst.fill = _copy.copy(src.fill)
+        dst.border = _copy.copy(src.border)
+        dst.alignment = _copy.copy(src.alignment)
+        dst.protection = _copy.copy(src.protection)
+        dst.number_format = src.number_format
+        print(f"  [结构] {ws.title} 已补列「{name}」（第 {col} 列）")
+        return col
+
     def backup(self, why=""):
         # 备份目录随工作簿走（放在同一目录下的「备份/」），保证测试不会污染真实备份
         bdir = self.path.parent / "备份"
@@ -276,32 +822,81 @@ class Book:
         print(f"  [备份] {dst}")
         return dst
 
-    LOG_SHEET = "迭代日志"
-    LOG_COLS = ["日期", "变更项", "旧值", "新值", "原因"]
-
-    def append_iter_log(self, why=""):
-        """保存前向「迭代日志」追加一行；sheet/表头缺失只警告，不报错。"""
-        if self.LOG_SHEET not in self.wb.sheetnames:
-            print(f"  WARN 无「{self.LOG_SHEET}」sheet，跳过日志写入")
-            return False
-        ws = self.wb[self.LOG_SHEET]
-        hdr = self._header_index(ws)
-        missing = [h for h in self.LOG_COLS if h not in hdr]
-        if missing:
-            print(f"  WARN 「{self.LOG_SHEET}」缺表头 {missing}，跳过日志写入")
-            return False
-        vals = [str(dt.date.today()), why or "update", "", "", "auto-by jd_tool"]
-        r = ws.max_row + 1
-        for name, val in zip(self.LOG_COLS, vals):
-            ws.cell(r, hdr[name]).value = val
-        return True
-
-    def save(self, do_backup=True, why=""):
+    def save(self, do_backup=True):
+        """保存工作簿；不再自动写迭代日志（日志由 log 子命令按运行写入）。"""
         if do_backup:
-            self.backup(why)
-        self.append_iter_log(why)
+            self.backup()
         self.wb.save(self.path)
         print(f"  [保存] {self.path}")
+
+
+def ensure_log_sheet(bk: Book):
+    """确保「迭代日志」sheet 存在且为 4 列；失败则中止（返回 (ws, hdr)）。"""
+    wb = bk.wb
+    if LOG_SHEET not in wb.sheetnames:
+        try:
+            ws = wb.create_sheet(LOG_SHEET)
+            for i, name in enumerate(LOG_COLS, start=1):
+                ws.cell(1, i).value = name
+            for i in range(1, len(LOG_COLS) + 1):
+                src = bk.active.cell(1, 1)
+                dst = ws.cell(1, i)
+                dst.font = _copy.copy(src.font)
+                dst.fill = _copy.copy(src.fill)
+                dst.border = _copy.copy(src.border)
+                dst.alignment = _copy.copy(src.alignment)
+                dst.protection = _copy.copy(src.protection)
+            print(f"  [结构] 已创建「{LOG_SHEET}」sheet（{len(LOG_COLS)} 列）")
+        except Exception as e:  # pragma: no cover
+            sys.exit(f"创建「{LOG_SHEET}」失败，已中止：{e}")
+    ws = wb[LOG_SHEET]
+    headers = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)
+               if ws.cell(1, c).value not in (None, "")]
+    if headers != LOG_COLS:
+        has_data = any(
+            any(ws.cell(r, c).value not in (None, "") for c in range(1, ws.max_column + 1))
+            for r in range(2, ws.max_row + 1)
+        )
+        if has_data:
+            sys.exit(f"「{LOG_SHEET}」表头不是 {LOG_COLS}，且已有数据；请人工处理后再写日志")
+        try:
+            for c in range(1, ws.max_column + 1):
+                ws.cell(1, c).value = None
+            for i, name in enumerate(LOG_COLS, start=1):
+                ws.cell(1, i).value = name
+            print(f"  [结构] 「{LOG_SHEET}」表头已重置为 {len(LOG_COLS)} 列")
+        except Exception as e:  # pragma: no cover
+            sys.exit(f"修正「{LOG_SHEET}」表头失败，已中止：{e}")
+    hdr = Book._header_index(ws)
+    missing = [h for h in LOG_COLS if h not in hdr]
+    if missing:  # pragma: no cover
+        sys.exit(f"「{LOG_SHEET}」缺少表头 {missing}，已中止")
+    return ws, hdr
+
+
+def parse_log_stats(v):
+    """解析「活跃a→b，失效c→d」，返回 (a,b,c,d) 或 None。"""
+    m = LOG_STATS_RE.search(str(v or "").replace(" ", ""))
+    return tuple(int(x) for x in m.groups()) if m else None
+
+
+# ---------------------------------------------------------------- describe
+
+def cmd_describe(args):
+    if args.format == "json":
+        print(json.dumps(FIELD_SPEC, ensure_ascii=False, indent=2))
+        return 0
+
+    def cell(text):
+        return str(text).replace("|", "\\|").replace("\n", " ")
+
+    print("| 字段 | 含义 | 分组 | 必填 | 类型/取值 | 写入规则 | 示例 |")
+    print("| --- | --- | --- | --- | --- | --- | --- |")
+    for f in FIELD_SPEC:
+        print(f"| {cell(f['name'])} | {cell(f['meaning'])} | {cell(f['group'])} | "
+              f"{cell(f['required'])} | {cell(f['type'])} | {cell(f['write_rule'])} | "
+              f"{cell(f['example'])} |")
+    return 0
 
 
 # ---------------------------------------------------------------- audit
@@ -319,8 +914,9 @@ def cmd_audit(bk: Book, args):
               f"（有表头 {named}，无表头尾列 {extra}）")
 
     ha, hd = bk.hdr_a(), bk.hdr_d()
-    missing = [h for h in ["去重ID", "公司名称", "职位名称", "工作城市", "最后发现日期", "综合优先级分"]
-               if h not in ha]
+    need_cols = ["去重ID", "最后发现日期", "综合优先级分"] + [
+        h for h in REQUIRED_INPUTS if h not in ("最后发现日期", "综合优先级分")]
+    missing = [h for h in need_cols if h not in ha]
     if missing:
         print(f"  ✗ 活跃表缺少关键列：{missing}")
         problems += 1
@@ -339,14 +935,63 @@ def cmd_audit(bk: Book, args):
         print("  → 修：python3 jd_tool.py sort --apply")
 
     # 3) 缺失值
-    print("\n[3] 必填字段缺失")
+    print("\n[3] 必填字段缺失" + ("（含 --strict 分析三列）" if args.strict else ""))
     miss = []
+    check_fields = REQUIRED_INPUTS + ["综合优先级分", "最后发现日期", "首次发现日期"]
+    if args.strict:
+        check_fields += STRICT_INPUTS
     for r, v in arows:
-        for k in ["综合优先级分", "最后发现日期", "首次发现日期", "契合度(1-5)", "当前可达性(1-5)"]:
+        for k in check_fields:
             if v.get(k) in (None, ""):
                 miss.append(f"{v.get('去重ID')}·{k}")
     print(f"  缺失 {len(miss)} 项" + (f"：{miss[:8]}" if miss else ""))
     if miss:
+        problems += 1
+
+    # 3b) 日期格式
+    print("\n[3b] 日期格式")
+    date_fields_a = ["发布日期", "截止日期", "首次发现日期", "最后发现日期"]
+    date_fields_d = date_fields_a + ["失效日期"]
+    bad_dates = []
+    for label, rows, fields in (("活跃", arows, date_fields_a),
+                                ("失效", Book.rows(bk.dead), date_fields_d)):
+        for r, v in rows:
+            for f in fields:
+                raw = v.get(f)
+                if raw in (None, ""):
+                    continue
+                prob = date_value_problem(raw, allow_unknown=(f == "发布日期"))
+                if prob:
+                    bad_dates.append(f"{label} {v.get('去重ID')}·{f}={raw!r}（{prob}）")
+    print(f"  问题 {len(bad_dates)} 处" + (f"：{bad_dates[:6]}" if bad_dates else ""))
+    if bad_dates:
+        problems += 1
+
+    # 3c) 取值范围
+    print("\n[3c] 取值范围（1–5 / 行业分 / 梯队分 / URL）")
+    bad_vals = []
+    for label, rows in (("活跃", arows), ("失效", Book.rows(bk.dead))):
+        for r, v in rows:
+            jid = v.get("去重ID")
+            for f in ("契合度(1-5)", "当前可达性(1-5)"):
+                raw = v.get(f)
+                if raw not in (None, "") and _int_1_5(raw) is None:
+                    bad_vals.append(f"{label} {jid}·{f}={raw!r}（应为 1–5 整数）")
+            ind = v.get("公司行业分")
+            if ind not in (None, "") and str(ind).strip() != "未知":
+                n = _as_num(ind)
+                if n is None or n not in INDUSTRY_ALLOWED:
+                    bad_vals.append(f"{label} {jid}·公司行业分={ind!r}（应为 0.5/0.8/1.0/未知）")
+            tier = v.get("公司梯队分")
+            if tier not in (None, "") and str(tier).strip() != "未知":
+                n = _as_num(tier)
+                if n is None or not (0.6 <= n <= 1.0):
+                    bad_vals.append(f"{label} {jid}·公司梯队分={tier!r}（应为 0.6–1.0/未知）")
+            url = v.get("原文链接")
+            if url not in (None, "") and not URL_RE.fullmatch(str(url).strip()):
+                bad_vals.append(f"{label} {jid}·原文链接={str(url)[:50]!r}（应为 http(s)）")
+    print(f"  问题 {len(bad_vals)} 处" + (f"：{bad_vals[:6]}" if bad_vals else ""))
+    if bad_vals:
         problems += 1
 
     # 4) 权重自检（用存储的 R/C/F/Ci/可达性 重算综合分）
@@ -450,11 +1095,124 @@ def cmd_audit(bk: Book, args):
     else:
         problems += 1
 
+    # 9) 迭代日志
+    print("\n[9] 迭代日志")
+    active_now = len(arows)
+    dead_now = len(Book.rows(bk.dead))
+    if LOG_SHEET not in bk.wb.sheetnames:
+        print(f"  ✗ 缺少「{LOG_SHEET}」sheet")
+        problems += 1
+    else:
+        ws = bk.wb[LOG_SHEET]
+        headers = [ws.cell(1, c).value for c in range(1, ws.max_column + 1)
+                   if ws.cell(1, c).value not in (None, "")]
+        if headers != LOG_COLS:
+            print(f"  ✗ 表头应为 {LOG_COLS}，实际 {headers}")
+            problems += 1
+        log_rows = Book.rows(ws)
+        if not log_rows:
+            if active_now or dead_now:
+                print("  ⚠ 有数据但无迭代日志行；请运行 log 补写本次运行")
+        else:
+            last = log_rows[-1][1]
+            log_bad = []
+            prob = date_value_problem(last.get("日期"))
+            if prob:
+                log_bad.append(f"日期 {last.get('日期')!r}（{prob}）")
+            for f in ("变更项", "统计", "原因"):
+                if str(last.get(f) or "").strip() == "":
+                    log_bad.append(f"{f} 为空")
+            stats = parse_log_stats(last.get("统计"))
+            if stats is None:
+                log_bad.append(f"统计无法解析：{last.get('统计')!r}")
+            elif (stats[1], stats[3]) != (active_now, dead_now):
+                log_bad.append(f"统计末值 活跃{stats[1]}/失效{stats[3]} ≠ 当前 活跃{active_now}/失效{dead_now}")
+            if log_bad:
+                print("  ✗ " + "；".join(log_bad))
+                problems += 1
+            else:
+                print(f"  最后一行 OK：{last.get('日期')} | {last.get('统计')}")
+
     print(f"\n== 汇总：{'全部通过 ✓' if problems == 0 else f'{problems} 类问题需处理'} ==")
     return 1 if (args.strict and problems) else 0
 
 
 # ---------------------------------------------------------------- add
+
+def _append_note(row, text):
+    base = str(row.get("备注/质量说明") or "").strip()
+    row["备注/质量说明"] = f"{base} {text}".strip()
+
+
+def load_repost_evidence(path):
+    """载入并校验 --repost-evidence JSON；不合规直接中止。"""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        sys.exit(f"重新发布证据读取失败：{e}")
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list) or not data:
+        sys.exit("--repost-evidence 必须是非空 JSON 数组")
+    need = ["原jd_id", "公司名称", "职位名称", "工作城市", "证据链接", "核实日期", "状态"]
+    out = []
+    for i, e in enumerate(data, 1):
+        if not isinstance(e, dict):
+            sys.exit(f"重新发布证据第 {i} 条不是对象")
+        miss = [k for k in need if str(e.get(k) or "").strip() == ""]
+        if miss:
+            sys.exit(f"重新发布证据第 {i} 条缺字段 {miss}")
+        if str(e["状态"]).strip() not in ("在招", "可投"):
+            sys.exit(f"重新发布证据第 {i} 条状态必须为「在招」或「可投」，实际 {e['状态']!r}")
+        if not URL_RE.fullmatch(str(e["证据链接"]).strip()):
+            sys.exit(f"重新发布证据第 {i} 条证据链接必须是 http(s) URL")
+        prob = date_value_problem(e["核实日期"])
+        if prob:
+            sys.exit(f"重新发布证据第 {i} 条核实日期{prob}：{e['核实日期']!r}")
+        out.append(e)
+    return out
+
+
+def match_repost(entries, dead_ids, it):
+    """按 原jd_id 或 公司+职位+城市（归一化）匹配失效行。"""
+    for e in entries or []:
+        if str(e.get("原jd_id", "")).strip() in dead_ids:
+            return e
+        if (norm_company(e.get("公司名称")) == norm_company(it.get("公司名称"))
+                and str(e.get("职位名称", "")).strip() == str(it.get("职位名称", "")).strip()
+                and norm_city(e.get("工作城市")) == norm_city(it.get("工作城市"))):
+            return e
+    return None
+
+
+def merge_source_into_row(bk: Book, r, it):
+    """把来源合并进活跃表第 r 行的「全部来源」；返回 (是否变更, 原因)。"""
+    if "全部来源" not in bk.hdr_a():
+        Book.ensure_column(bk.active, "全部来源")
+    hdr = bk.hdr_a()
+    ws = bk.active
+    cell = ws.cell(r, hdr["全部来源"])
+    cur = "" if cell.value is None else str(cell.value).strip()
+
+    platform = str(it.get("来源平台") or "").strip()
+    url = str(it.get("原文链接") or "").strip()
+    if not cur:
+        # 用库内已有来源初始化；库内缺失时退回本次来源
+        exist_plat = str(ws.cell(r, hdr["来源平台"]).value or "").strip() if "来源平台" in hdr else ""
+        exist_url = str(ws.cell(r, hdr["原文链接"]).value or "").strip() if "原文链接" in hdr else ""
+        init_plat, init_url = exist_plat or platform, exist_url or url
+        if not init_plat or not init_url:
+            return False, "无来源信息"
+        cell.value = f"{init_plat}|{init_url}"
+        if init_url == url:
+            return True, "init"
+    if not url:
+        return False, "无来源链接"
+    if url in str(cell.value or ""):
+        return False, "已有该来源"
+    cell.value = f"{str(cell.value).strip()}；{platform}|{url}"
+    return True, "append"
+
 
 def cmd_add(bk: Book, args):
     src = sys.stdin.read() if args.file == "-" else Path(args.file).read_text(encoding="utf-8")
@@ -464,24 +1222,33 @@ def cmd_add(bk: Book, args):
         sys.exit(f"JSON 解析失败：{e}")
     if isinstance(items, dict):
         items = [items]
+    if not isinstance(items, list):
+        sys.exit("JSON 输入必须是对象数组（或单个对象）")
+
+    bad_generated = sorted({k for it in items if isinstance(it, dict)
+                            for k in it if k in GENERATED_FIELDS})
+    if bad_generated:
+        sys.exit(f"输入含系统生成字段 {bad_generated}；请从 JSON 中删除，"
+                 f"这些列由 add/recompute 生成")
+
+    if args.allow_repost and not args.repost_evidence:
+        sys.exit("--allow-repost 必须同时提供 --repost-evidence <json>（只给开关不给证据 = 无法核实）")
+    evidence = load_repost_evidence(args.repost_evidence) if args.repost_evidence else []
 
     today = args.today
     ha = bk.hdr_a()
-    hd = bk.hdr_d()
+    if args.merge_sources and "全部来源" not in ha:
+        Book.ensure_column(bk.active, "全部来源")
+        ha = bk.hdr_a()
 
-    key3 = lambda d: (str(d.get("公司名称", "")).strip(),
-                      str(d.get("职位名称", "")).strip(),
-                      str(d.get("工作城市", "")).strip())
-
-    have = {key_strict(v) for _, v in Book.rows(bk.active)}
-    have_n = {}
-    for _, v in Book.rows(bk.active):
-        have_n.setdefault(key_norm(v), []).append(v.get("去重ID"))
-    dead = {}
-    dead_n = {}
-    for _, v in Book.rows(bk.dead):
-        dead.setdefault(key_strict(v), []).append(v.get("去重ID"))
-        dead_n.setdefault(key_norm(v), []).append(v.get("去重ID"))
+    row_by_strict, row_by_norm = {}, {}
+    for r, v in Book.rows(bk.active):
+        row_by_strict.setdefault(key_strict(v), r)
+        row_by_norm.setdefault(key_norm(v), r)
+    dead_by_strict, dead_by_norm = {}, {}
+    for r, v in Book.rows(bk.dead):
+        dead_by_strict.setdefault(key_strict(v), []).append(v.get("去重ID"))
+        dead_by_norm.setdefault(key_norm(v), []).append(v.get("去重ID"))
 
     # 下一个去重 ID
     mx = 0
@@ -492,40 +1259,70 @@ def cmd_add(bk: Book, args):
                 mx = max(mx, int(m.group(1)))
     nxt = mx + 1
 
-    added = []
+    added, merged, skipped = [], [], 0
     for it in items:
-        miss = [k for k in REQUIRED_INPUTS if it.get(k) in (None, "")]
-        if miss:
-            print(f"  SKIP 缺少必填 {miss}：{it.get('公司名称', '?')} · {it.get('职位名称', '?')}")
+        if not isinstance(it, dict):
+            print("  SKIP 输入项不是对象")
+            skipped += 1
             continue
-        lack = [c for c in STRICT_COLS if it.get(c) in (None, "")]
-        if lack:
-            if args.strict:
-                print(f"  SKIP strict 缺列 {lack}：{it.get('公司名称', '?')} · {it.get('职位名称', '?')}")
+        who = f"{it.get('公司名称', '?')} · {it.get('职位名称', '?')}"
+        errs = validate_item(it, strict=args.strict)
+        if errs:
+            print(f"  SKIP {who}：{'；'.join(errs)}")
+            skipped += 1
+            continue
+        if not args.strict:
+            lack = [c for c in STRICT_INPUTS
+                    if it.get(c) in (None, "") or not str(it.get(c)).strip()]
+            if lack:
+                print(f"  WARN 缺 strict 列 {lack}：{who}")
+
+        k, kn = key_strict(it), key_norm(it)
+        dup_row = row_by_strict.get(k) or row_by_norm.get(kn)
+        if dup_row:
+            jid = bk.active.cell(dup_row, ha["去重ID"]).value
+            if not args.merge_sources:
+                print(f"  SKIP 活跃表已有：{jid} · {k}（--no-merge-sources）")
+                skipped += 1
                 continue
-            print(f"  WARN 缺 strict 列 {lack}：{it.get('公司名称', '?')} · {it.get('职位名称', '?')}")
-        k = key3(it)
-        kn = key_norm(it)
-        if k in have:
-            print(f"  SKIP 活跃表已有：{k}")
+            changed, why = merge_source_into_row(bk, dup_row, it)
+            if changed:
+                print(f"  合并来源 {jid}：{why} → {it.get('来源平台')}|{it.get('原文链接')}")
+                merged.append((jid, it.get("公司名称"), it.get("职位名称"), it.get("来源平台")))
+            else:
+                print(f"  SKIP {jid} 无新来源（{why}）：{k}")
+                skipped += 1
             continue
-        if kn in have_n and kn != k:
-            print(f"  SKIP 活跃表已有（归一化命中·书写差异）：{kn} ≈ {have_n[kn]}")
-            continue
-        if k in dead and not args.allow_repost:
-            print(f"  SKIP 失效表已有 {dead[k]}（重新发布请加 --allow-repost）：{k}")
-            continue
-        if kn in dead_n and kn != k and not args.allow_repost:
-            print(f"  SKIP 失效表已有 {dead_n[kn]}（归一化命中·书写差异；重新发布请加 --allow-repost）：{kn}")
-            continue
+
+        dead_ids = dead_by_strict.get(k) or dead_by_norm.get(kn)
+        origin = None
+        if dead_ids:
+            if not args.allow_repost:
+                print(f"  SKIP 失效表已有 {dead_ids}"
+                      f"（重新发布请加 --allow-repost + --repost-evidence）：{k}")
+                skipped += 1
+                continue
+            match = match_repost(evidence, dead_ids, it)
+            if not match:
+                print(f"  SKIP 失效表已有 {dead_ids}，但 --repost-evidence 未命中该岗位：{k}")
+                skipped += 1
+                continue
+            origin = str(match.get("原jd_id") or dead_ids[0]).strip()
+
+        ind, tier, used_default = resolve_company_scores(
+            it.get("公司行业分"), it.get("公司梯队分"))
+        if used_default:
+            print(f"  WARN {who} {'/'.join(used_default)} 为未知 → "
+                  f"C 按默认值（行业 {DEFAULT_INDUSTRY} / 梯队 {DEFAULT_TIER}）计算")
 
         R = r_weight(it.get("发布日期"), today, unknown=args.r_unknown)
-        C = c_weight(it.get("公司行业分", 0.5), it.get("公司梯队分", 0.7))
-        F = float(it["契合度(1-5)"]) / 5.0
+        C = c_weight(ind, tier)
+        F = float(_int_1_5(it["契合度(1-5)"])) / 5.0
         Ci = ci_weight(it.get("工作城市"), it.get("城市权重Ci"))
-        A = float(it["当前可达性(1-5)"]) / 5.0
+        A = float(_int_1_5(it["当前可达性(1-5)"])) / 5.0
 
         row = dict(it)
+        row.pop("城市权重Ci", None)
         row["去重ID"] = f"JD{nxt:03d}"
         row["抓取日期"] = str(today)
         row["首次发现日期"] = str(today)
@@ -535,11 +1332,8 @@ def cmd_add(bk: Book, args):
         row["契合权重F"] = round(F, 3)
         row["城市权重Ci"] = Ci
         row["综合优先级分"] = total_score(R, C, F, Ci, A)
-        row["权重明细"] = f"R{R}|C{round(C,2)}|F{F:.2f}|Ci{Ci}|A{A:.2f}"
-        orig = dead.get(k) or dead_n.get(kn)
-        if orig:  # allow_repost
-            row["备注/质量说明"] = (str(row.get("备注/质量说明", ""))
-                                    + f" [重新发布·原 {'/'.join(map(str, orig))} 已失效]").strip()
+        if origin:
+            _append_note(row, f"[重新发布·原 {origin} 已失效]")
 
         r = bk.active.max_row + 1
         for name, val in row.items():
@@ -549,57 +1343,133 @@ def cmd_add(bk: Book, args):
             if name not in row:
                 bk.active.cell(r, ha[name]).value = None
         nxt += 1
-        have.add(k)
-        have_n.setdefault(kn, []).append(row["去重ID"])
-        added.append((row["去重ID"], row["公司名称"], row["职位名称"], row["综合优先级分"], R))
+        row_by_strict.setdefault(k, r)
+        row_by_norm.setdefault(kn, r)
+        added.append((row["去重ID"], row["公司名称"], row["职位名称"],
+                      row["综合优先级分"], R, origin))
 
-    if not added:
-        print("  无新增。")
+    if not added and not merged:
+        print(f"  无新增、无合并来源（跳过 {skipped} 条）。")
         return 0
 
-    print(f"\n  新增 {len(added)} 条：")
+    print(f"\n  新增 {len(added)} 条，合并来源 {len(merged)} 条（跳过 {skipped} 条）：")
     for a in added:
-        print(f"    {a[0]}  {a[1]} · {a[2]}  综合={a[3]}（R={a[4]}）")
-    if any(a[4] == args.r_unknown for a in added) and args.r_unknown != 0.4:
+        tail = f"  ← 原 {a[5]} 重新发布" if a[5] else ""
+        print(f"    {a[0]}  {a[1]} · {a[2]}  综合={a[3]}（R={a[4]}）{tail}")
+    for m in merged:
+        print(f"    合并来源 {m[0]}  {m[1]} · {m[2]}  +{m[3]}")
+
+    if added and any(a[4] == args.r_unknown for a in added) and args.r_unknown != 0.4:
         print(f"  ⚠ 有条目按「发布日期未知 → R={args.r_unknown}」计分")
 
-    if not args.no_sort:
+    if added and not args.no_sort:
         n = do_sort(bk)
         print(f"  已按综合优先级分降序重排（{n} 行）")
-    bk.save(do_backup=not args.no_backup, why=f"add +{len(added)}")
+    bk.save(do_backup=not args.no_backup)
     return 0
 
 
 # ---------------------------------------------------------------- refresh
 
+REFRESH_STATUS = ("在招", "可投", "仅索引残留", "详情不可访问", "已关闭")
+REFRESH_OK = ("在招", "可投")
+
+
+def load_refresh_evidence(path):
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as e:
+        sys.exit(f"刷新证据读取失败：{e}")
+    if isinstance(data, dict):
+        data = [data]
+    if not isinstance(data, list) or not data:
+        sys.exit("--evidence 必须是非空 JSON 数组")
+    need = ["jd_id", "平台", "查询词", "证据链接", "核实日期", "状态"]
+    out = []
+    for i, e in enumerate(data, 1):
+        if not isinstance(e, dict):
+            sys.exit(f"刷新证据第 {i} 条不是对象")
+        miss = [k for k in need if str(e.get(k) or "").strip() == ""]
+        if miss:
+            sys.exit(f"刷新证据第 {i} 条缺字段 {miss}")
+        status = str(e["状态"]).strip()
+        if status not in REFRESH_STATUS:
+            sys.exit(f"刷新证据第 {i} 条状态必须为 {list(REFRESH_STATUS)} 之一，实际 {status!r}")
+        if not URL_RE.fullmatch(str(e["证据链接"]).strip()):
+            sys.exit(f"刷新证据第 {i} 条证据链接必须是 http(s) URL")
+        prob = date_value_problem(e["核实日期"])
+        if prob:
+            sys.exit(f"刷新证据第 {i} 条核实日期{prob}：{e['核实日期']!r}")
+        out.append(e)
+    return out
+
+
 def cmd_refresh(bk: Book, args):
-    ids = []
-    if args.ids:
-        ids += [x.strip() for x in args.ids.split(",") if x.strip()]
-    if args.ids_file:
-        raw = Path(args.ids_file).read_text(encoding="utf-8")
-        ids += re.findall(r"JD\d+", raw)
-    if not ids:
-        sys.exit("请用 --ids JD251,JD256 或 --ids-file <文件> 指定要刷新的去重ID")
-
-    want = set(ids)
-    hit, missed = [], []
     ha = bk.hdr_a()
+    if "最后发现日期" not in ha:
+        sys.exit("活跃表缺少「最后发现日期」列，无法刷新")
+    rows = {}
     for r, v in Book.rows(bk.active):
-        i = str(v.get("去重ID") or "").strip()
-        if i in want:
-            bk.active.cell(r, ha["最后发现日期"]).value = str(args.date)
-            hit.append(i)
-            want.discard(i)
-    missed = sorted(want)
+        rows.setdefault(str(v.get("去重ID") or "").strip(), r)
 
-    print(f"  刷新「最后发现日期」→ {args.date}：{len(hit)} 条 {hit[:12]}{' ...' if len(hit) > 12 else ''}")
-    if missed:
-        print(f"  ⚠ 未在活跃表找到：{missed}")
-    if not hit:
-        print("  无改动。")
-        return 0
-    bk.save(do_backup=not args.no_backup, why=f"refresh {len(hit)}")
+    if args.evidence:
+        entries = load_refresh_evidence(args.evidence)
+        hit, nochange, missed = [], [], []
+        for e in entries:
+            jid = str(e["jd_id"]).strip()
+            r = rows.get(jid)
+            if r is None:
+                missed.append(jid)
+                continue
+            status = str(e["状态"]).strip()
+            if status in REFRESH_OK:
+                bk.active.cell(r, ha["最后发现日期"]).value = str(e["核实日期"]).strip()
+                hit.append(jid)
+            else:
+                nochange.append((jid, status))
+                print(f"  KEEP {jid} 状态「{status}」→ 不更新最后发现日期"
+                      f"（{e['平台']} / {e['查询词']}）")
+        print(f"  证据刷新：更新 {len(hit)} 条 {hit[:12]}{' ...' if len(hit) > 12 else ''}")
+        if nochange:
+            print(f"  未更新 {len(nochange)} 条：{[x[0] for x in nochange][:12]}")
+        if missed:
+            print(f"  ⚠ 未在活跃表找到：{missed}")
+        if not hit:
+            print("  无改动。")
+            return 0
+    else:
+        ids = []
+        if args.ids:
+            ids += [x.strip() for x in args.ids.split(",") if x.strip()]
+        if args.ids_file:
+            ids += re.findall(r"JD\d+", Path(args.ids_file).read_text(encoding="utf-8"))
+        if not ids:
+            sys.exit("请用 --evidence <json>（首选），或 --ids JD251,JD256 --confirm-visible --reason \"...\"")
+        if not args.confirm_visible:
+            sys.exit("手工刷新必须加 --confirm-visible（已再次核实详情页仍在招/可投）")
+        if not str(args.reason or "").strip():
+            sys.exit("手工刷新必须提供 --reason \"...\"（说明核实依据）")
+
+        date = args.date or args.today
+        want = set(ids)
+        hit = []
+        for jid in want:
+            r = rows.get(jid)
+            if r is None:
+                continue
+            bk.active.cell(r, ha["最后发现日期"]).value = str(date)
+            hit.append(jid)
+        missed = sorted(want - set(hit))
+        print(f"  手工刷新「最后发现日期」→ {date}：{len(hit)} 条 "
+              f"{sorted(hit)[:12]}{' ...' if len(hit) > 12 else ''}")
+        print(f"  理由：{args.reason.strip()}")
+        if missed:
+            print(f"  ⚠ 未在活跃表找到：{missed}")
+        if not hit:
+            print("  无改动。")
+            return 0
+
+    bk.save(do_backup=not args.no_backup)
     return 0
 
 
@@ -607,7 +1477,6 @@ def cmd_refresh(bk: Book, args):
 
 def cmd_purge(bk: Book, args):
     today = args.date or args.today
-    hd = bk.hdr_d()
     stale_days = CONFIG["stale_days"]
 
     targets = []
@@ -627,24 +1496,27 @@ def cmd_purge(bk: Book, args):
         print("\n  [dry-run] 未写入。确认后加 --apply 执行。")
         return 0
 
-    # 失效表 col33/col34 是「失效日期 / 失效原因」（原无表头）——只在真正写入时补表头
-    if hd.get("失效日期") is None:
-        bk.dead.cell(1, 33).value = "失效日期"
-        bk.dead.cell(1, 34).value = "失效原因"
-        bk.dead.cell(1, 33).font = _copy.copy(bk.dead.cell(1, 1).font)
-        bk.dead.cell(1, 34).font = _copy.copy(bk.dead.cell(1, 1).font)
-        hd = bk.hdr_d()
-        print("  [结构] 失效表 col33/col34 已补表头：失效日期 / 失效原因")
-
     ha = bk.hdr_a()
+    hd = bk.hdr_d()
+    # 失效表列一律按表头名确保存在（不再硬编码 col33/col34）
+    for name in ha:
+        if name not in hd:
+            Book.ensure_column(bk.dead, name)
+    for name in ("全部来源", "失效日期", "失效原因"):
+        if name not in hd:
+            Book.ensure_column(bk.dead, name)
+    hd = bk.hdr_d()
+
     moved = 0
     for r, v, why in sorted(targets, key=lambda x: -x[0]):   # 自下而上删，行号不失效
         dr = bk.dead.max_row + 1
         for name, c in ha.items():                          # 按表头名搬运，不按列号
-            bk.dead.cell(dr, hd[name]).value = bk.active.cell(r, c).value
-        # 活跃表无表头的尾列（col33 若有游离注记）-> 并入备注，避免丢失
+            if name in hd:
+                bk.dead.cell(dr, hd[name]).value = bk.active.cell(r, c).value
+        # 活跃表无表头的尾列（若有游离注记）-> 并入备注，避免丢失
         note = bk.active.cell(r, bk.active.max_column).value
-        if bk.active.max_column > max(ha.values()) and note not in (None, ""):
+        if (bk.active.max_column > max(ha.values()) and note not in (None, "")
+                and "备注/质量说明" in hd):
             base = bk.dead.cell(dr, hd["备注/质量说明"]).value or ""
             bk.dead.cell(dr, hd["备注/质量说明"]).value = f"{base}\n[原活跃表尾注] {note}".strip()
         bk.dead.cell(dr, hd["失效日期"]).value = str(today)
@@ -654,7 +1526,7 @@ def cmd_purge(bk: Book, args):
 
     print(f"\n  已移入失效 {moved} 条")
     do_sort(bk)
-    bk.save(do_backup=not args.no_backup, why=f"purge -{moved}")
+    bk.save(do_backup=not args.no_backup)
     return 0
 
 
@@ -695,7 +1567,7 @@ def cmd_sort(bk: Book, args):
     if not args.apply:
         print("\n  [dry-run] 未写入。确认后加 --apply 执行。")
         return 0
-    bk.save(do_backup=not args.no_backup, why="sort")
+    bk.save(do_backup=not args.no_backup)
     return 0
 
 
@@ -782,7 +1654,7 @@ def cmd_repair(bk: Book, args):
             bk.wb[t].delete_rows(r)
         print(f"\n  [③] {len(note_rows)} 行已迁入旁车文件 {sidecar.name} 并删除原行")
 
-    bk.save(do_backup=not args.no_backup, why=f"repair {total}")
+    bk.save(do_backup=not args.no_backup)
     return 0
 
 
@@ -790,7 +1662,7 @@ def cmd_repair(bk: Book, args):
 
 # 这些列由计分流程派生，不允许用 set 直接改写（必须走 add / recompute）
 SET_BANNED = {"综合优先级分", "时效权重R", "公司权重C", "契合权重F",
-              "城市权重Ci", "权重明细"}
+              "城市权重Ci", "去重ID", "抓取日期", "首次发现日期", "最后发现日期"}
 
 
 def cmd_set(bk: Book, args):
@@ -840,19 +1712,10 @@ def cmd_set(bk: Book, args):
     if not n:
         return 0
     if args.apply:
-        bk.save(do_backup=not args.no_backup, why=f"set {n} 处")
+        bk.save(do_backup=not args.no_backup)
     else:
         print("  [dry-run] 未写入。加 --apply 执行。")
     return 0
-
-
-def _as_num(v):
-    if isinstance(v, (int, float)):
-        return float(v)
-    try:
-        return float(str(v).strip())
-    except (TypeError, ValueError):
-        return None
 
 
 def _same_num(a, b):
@@ -867,8 +1730,8 @@ def cmd_recompute(bk: Book, args):
 
     输入：发布日期 / 公司行业分 / 公司梯队分 / 契合度(1-5) / 当前可达性(1-5) / 工作城市，
           城市权重Ci 优先取存量值（与 add 一致），缺失时按工作城市推导。
-    输出：时效权重R / 公司权重C / 契合权重F / 城市权重Ci / 综合优先级分，
-          以及「权重明细」（活跃表存在该列时一并同步）。
+    输出：时效权重R / 公司权重C / 契合权重F / 城市权重Ci / 综合优先级分。
+    行业分 / 梯队分为「未知」时按默认值计分（行业 0.5、梯队 0.7），与 add 一致；
     发布日期未知时 R 取 --r-unknown（默认 0.4）。
     """
     today = args.today
@@ -879,30 +1742,33 @@ def cmd_recompute(bk: Book, args):
     if missing:
         sys.exit(f"活跃表缺少 recompute 所需列：{missing}")
 
-    changes, skipped = [], []
+    changes, skipped, fallback_ids = [], [], []
     for r, v in Book.rows(bk.active):
-        try:
-            R = r_weight(v.get("发布日期"), today, unknown=args.r_unknown)
-            C = round(c_weight(v.get("公司行业分", 0.5), v.get("公司梯队分", 0.7)), 3)
-            F = round(float(v["契合度(1-5)"]) / 5.0, 3)
-            Ci = ci_weight(v.get("工作城市"), v.get("城市权重Ci"))
-            A = float(v["当前可达性(1-5)"]) / 5.0
-        except (TypeError, ValueError):
+        A = _int_1_5(v.get("当前可达性(1-5)"))
+        F_n = _int_1_5(v.get("契合度(1-5)"))
+        if A is None or F_n is None:
             skipped.append(v.get("去重ID"))
             continue
+        ind, tier, used = resolve_company_scores(v.get("公司行业分"), v.get("公司梯队分"))
+        if used:
+            fallback_ids.append(v.get("去重ID"))
+        R = r_weight(v.get("发布日期"), today, unknown=args.r_unknown)
+        C = round(c_weight(ind, tier), 3)
+        F = round(F_n / 5.0, 3)
+        Ci = ci_weight(v.get("工作城市"), v.get("城市权重Ci"))
+        A_f = A / 5.0
         new = {"时效权重R": R, "公司权重C": C, "契合权重F": F,
-               "城市权重Ci": Ci, "综合优先级分": total_score(R, C, F, Ci, A)}
+               "城市权重Ci": Ci, "综合优先级分": total_score(R, C, F, Ci, A_f)}
         diffs = [(k, v.get(k), val) for k, val in new.items() if not _same_num(v.get(k), val)]
-        if "权重明细" in ha:
-            new["权重明细"] = f"R{R}|C{round(C,2)}|F{F:.2f}|Ci{Ci}|A{A:.2f}"
-            if str(v.get("权重明细") or "") != new["权重明细"]:
-                diffs.append(("权重明细", v.get("权重明细"), new["权重明细"]))
         if diffs:
             changes.append((r, v, new, diffs))
 
     print(f"== recompute（基准 {today}，R 未知={args.r_unknown}）==")
     tail = f"，输入列不可解析 SKIP {len(skipped)} 条：{skipped[:6]}" if skipped else ""
     print(f"  待更新 {len(changes)} 条{tail}")
+    if fallback_ids:
+        print(f"  WARN 行业分/梯队分为未知，按默认值计分（行业 {DEFAULT_INDUSTRY} / "
+              f"梯队 {DEFAULT_TIER}）：{len(fallback_ids)} 条 {fallback_ids[:6]}")
     for r, v, new, diffs in changes[:5]:
         print(f"    {v.get('去重ID')}  {v.get('公司名称')} · {v.get('职位名称')}")
         print("      " + "；".join(f"{k} {old}→{val}" for k, old, val in diffs))
@@ -917,7 +1783,59 @@ def cmd_recompute(bk: Book, args):
             bk.active.cell(r, ha[k]).value = val
     n = do_sort(bk)
     print(f"\n  已重算 {len(changes)} 条，并按综合优先级分重排（{n} 行）")
-    bk.save(do_backup=not args.no_backup, why="recompute")
+    bk.save(do_backup=not args.no_backup)
+    return 0
+
+
+# ---------------------------------------------------------------- log（运行级迭代日志）
+
+def cmd_log(bk: Book, args):
+    """一次 O2b 运行写一行日志：日期 | 变更项 | 统计 | 原因（--dry-run 只预览）。"""
+    change = str(args.change or "").strip()
+    reason = str(args.reason or "").strip()
+    if not change:
+        sys.exit("--change 不能为空（写本次变更摘要，如「新增 JD270–JD272」）")
+    if not reason:
+        sys.exit("--reason 不能为空（写一句话原因）")
+
+    active_now = len(Book.rows(bk.active))
+    dead_now = len(Book.rows(bk.dead))
+
+    before_a, before_d = args.before_active, args.before_dead
+    if before_a is None or before_d is None:
+        prev = None
+        if LOG_SHEET in bk.wb.sheetnames:
+            rows = Book.rows(bk.wb[LOG_SHEET])
+            if rows:
+                prev = rows[-1][1]
+        stats = parse_log_stats(prev.get("统计")) if prev else None
+        if stats:
+            # stats = (活跃前, 活跃后, 失效前, 失效后)；沿用上一行的 after 值
+            if before_a is None:
+                before_a = stats[1]
+            if before_d is None:
+                before_d = stats[3]
+        else:
+            print("  WARN 无上一行统计可用，运行前值按当前数量计（本次统计可能低估变化）")
+            if before_a is None:
+                before_a = active_now
+            if before_d is None:
+                before_d = dead_now
+
+    row = [str(args.today), change,
+           f"活跃{before_a}→{active_now}，失效{before_d}→{dead_now}", reason]
+    print("  日志行：" + " | ".join(row))
+    if args.dry_run:
+        print("  [dry-run] 未写入。")
+        return 0
+
+    bk.backup("迭代日志")
+    ws, hdr = ensure_log_sheet(bk)
+    r = ws.max_row + 1
+    for name, val in zip(LOG_COLS, row):
+        ws.cell(r, hdr[name]).value = val
+    bk.wb.save(bk.path)
+    print(f"  [保存] {bk.path}（迭代日志第 {r} 行）")
     return 0
 
 
@@ -933,39 +1851,63 @@ def cmd_backup(bk: Book, args):
 def main(argv=None):
     global CONFIG
     p = argparse.ArgumentParser(
-        description="JD 活跃库维护工具",
+        description="JD 活跃库维护工具：字段规格、入库、去重合并、刷新、失效、日志。",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="示例：\n"
-               "  jd_tool.py --workbook <路径> add new.json --strict\n"
-               "  jd_tool.py --workbook <路径> add new.json --r-unknown 0.4\n"
-               "  jd_tool.py --workbook <路径> recompute [--apply]",
+               "  jd_tool.py describe [--format markdown|json]\n"
+               "  jd_tool.py --workbook <路径> audit [--strict]\n"
+               "  jd_tool.py --workbook <路径> add new.json [--strict] [--no-merge-sources]\n"
+               "  jd_tool.py --workbook <路径> add new.json --allow-repost --repost-evidence repost.json\n"
+               "  jd_tool.py --workbook <路径> refresh --evidence refresh.json\n"
+               "  jd_tool.py --workbook <路径> refresh --ids JD251,JD256 --confirm-visible --reason \"...\"\n"
+               "  jd_tool.py --workbook <路径> purge [--apply]\n"
+               "  jd_tool.py --workbook <路径> log --change \"新增 JD270–JD272\" --reason \"日常扫描\"\n"
+               "\n"
+               "写入语义：describe / audit 只读；add / refresh 即时写入；"
+               "purge / sort / repair / set / recompute 默认预览，需 --apply；\n"
+               "log 一次运行写一行（--dry-run 预览）；backup 为手动备份。",
     )
     p.add_argument("--workbook", type=Path, default=Path.cwd() / "JD扫描-活跃库.xlsx",
                    help="工作簿路径（默认当前目录下的 JD扫描-活跃库.xlsx）")
     p.add_argument("--config", type=Path, default=None,
                    help="配置 JSON，可覆盖 sheets/weights/city/city_default/stale_days（默认内置规格）")
     p.add_argument("--today", type=lambda s: dt.date.fromisoformat(s), default=dt.date.today(),
-                   help="把「今天」固定为某日期（测试用）")
+                   help="把「今天」（业务日）固定为某日期（测试用）")
     sub = p.add_subparsers(dest="cmd", required=True)
+
+    a = sub.add_parser("describe", help="输出字段规格（FIELD_SPEC，唯一真源）")
+    a.add_argument("--format", choices=["markdown", "json"], default="markdown")
 
     a = sub.add_parser("audit", help="只读体检")
     a.add_argument("--strict", action="store_true", help="有问题时返回非零退出码")
 
     a = sub.add_parser("add", help="追加当日新 JD（JSON 数组文件，或 - 读 stdin）")
     a.add_argument("file")
-    a.add_argument("--allow-repost", action="store_true", help="允许失效后重新发布的岗位再入册")
     a.add_argument("--strict", action="store_true",
-                   help="strict 四列（岗位/职能专有能力要求 / Market Signal / Portfolio Relevance / "
-                        "Portfolio Benchmark）任一为空即拒收")
+                   help="分析三列（Market Signal / Portfolio Relevance / Portfolio Benchmark）"
+                        "任一为空即拒收")
+    a.add_argument("--allow-repost", action="store_true",
+                   help="允许失效后重新发布（必须同时提供 --repost-evidence）")
+    a.add_argument("--repost-evidence",
+                   help="重新发布证据 JSON：原jd_id/公司名称/职位名称/工作城市/证据链接/核实日期/状态")
+    a.add_argument("--merge-sources", dest="merge_sources", action="store_true", default=True,
+                   help="活跃表重复时把新来源合并进「全部来源」（默认开启）")
+    a.add_argument("--no-merge-sources", dest="merge_sources", action="store_false",
+                   help="活跃表重复时不合并来源，直接跳过")
     a.add_argument("--r-unknown", type=float, default=0.4,
                    help="发布日期未知时的 R（默认 0.4，2026-10-16 已裁定）")
     a.add_argument("--no-sort", action="store_true")
     a.add_argument("--no-backup", action="store_true")
 
-    a = sub.add_parser("refresh", help="刷新「最后发现日期」")
-    a.add_argument("--ids", help="逗号分隔，如 JD251,JD256")
+    a = sub.add_parser("refresh", help="刷新「最后发现日期」（首选 --evidence）")
+    a.add_argument("--evidence", help="刷新证据 JSON：jd_id/平台/查询词/证据链接/核实日期/状态")
+    a.add_argument("--ids", help="逗号分隔，如 JD251,JD256（需 --confirm-visible --reason）")
     a.add_argument("--ids-file", help="从文件里抓取所有 JDxxx")
-    a.add_argument("--date", type=lambda s: dt.date.fromisoformat(s), default=dt.date.today())
+    a.add_argument("--confirm-visible", action="store_true",
+                   help="手工路径：确认已再次核实详情页在招/可投")
+    a.add_argument("--reason", help="手工路径：核实依据说明")
+    a.add_argument("--date", type=lambda s: dt.date.fromisoformat(s), default=None,
+                   help="手工刷新写入的日期（默认同 --today）")
     a.add_argument("--no-backup", action="store_true")
 
     a = sub.add_parser("purge", help="超期移入失效（默认 dry-run）")
@@ -994,15 +1936,25 @@ def main(argv=None):
                    help="发布日期未知时的 R（默认 0.4）")
     a.add_argument("--no-backup", action="store_true")
 
+    a = sub.add_parser("log", help="写一行运行级迭代日志（4 列）")
+    a.add_argument("--change", required=True, help="变更项摘要，如「新增 JD270–JD272」")
+    a.add_argument("--reason", required=True, help="一句话原因")
+    a.add_argument("--before-active", type=int, default=None, help="运行前活跃条数")
+    a.add_argument("--before-dead", type=int, default=None, help="运行前失效条数")
+    a.add_argument("--dry-run", action="store_true", help="只预览，不写入")
+
     sub.add_parser("backup", help="手动备份")
 
     args = p.parse_args(argv)
     CONFIG = load_config(args.config)
+    if args.cmd == "describe":
+        return cmd_describe(args)
     bk = Book(args.workbook)
     return {
         "audit": cmd_audit, "add": cmd_add, "refresh": cmd_refresh,
         "purge": cmd_purge, "sort": cmd_sort, "repair": cmd_repair,
-        "set": cmd_set, "recompute": cmd_recompute, "backup": cmd_backup,
+        "set": cmd_set, "recompute": cmd_recompute, "log": cmd_log,
+        "backup": cmd_backup,
     }[args.cmd](bk, args)
 
 
