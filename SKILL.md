@@ -38,6 +38,7 @@ description: Use when 需要对某岗位域/职能做持续研究（岗位能力
 5. 强度守恒：证据不足时写"当前证据不足"，不补全。
 6. 采集与筛选口径（默认）：关注过去 24 小时，必要时回溯 3 天；每日 3–5 个重要信号，同源合并；筛选判据见 `references/signal-selection.md`；岗位域的「信号优先类别」见 `research-state.md`。
 7. 数据层：信号库目录与文件命名由 `research-state.md` 声明（默认 `YYYY-MM-DD-日报.md`）。
+8. 待验证问题回写：O1 完成后逐条更新 research-state.md §四的「本期进展」「下一步验证」；有新证据写结论+核心证据+强度，无变化写“无变化（本轮未获新证据）”；O1 不改状态，状态由 O3 改。
 
 ## 默认风格（可被 `research-state.md` 输出偏好覆盖）
 - 中文；结论先行；简明、清晰、具体；战略分析而非新闻摘要。
@@ -66,7 +67,7 @@ description: Use when 需要对某岗位域/职能做持续研究（岗位能力
 ## 交付清单（缺任一项 = 本轮未完成，不得宣称完成）
 | 产出 | 完成判据 |
 |---|---|
-| O1 信号日报 | 3–5 条 ×（证据等级 E1–E5 + Evidence / Why it matters / Career Implication / Counterevidence / Experiment）；今日学习建议 3 问；今日 JD 扫描报告；发布日期精确到日（月/年须标"日未披露"） |
+| O1 信号日报 | 3–5 条 ×（证据等级 E1–E5 + Evidence / Why it matters / Career Implication / Counterevidence / Experiment）；今日学习建议 3 问；今日 JD 扫描报告；发布日期精确到日（月/年须标"日未披露"）；待验证问题表已逐条判断并回写（无变化已注明） |
 | O2a 岗位扫描采集 | 检索位矩阵全部 query 执行；平台覆盖台账逐平台有状态；首轮基线记录（覆盖 / 候选 / 去重 / 核验 / 状态不明）或持续维护记录；0 新增给出三态归因 |
 | O2b 岗位数据维护 | 新增 / 刷新 / 失效；迭代日志已由 `jd_tool.py` 自动写入；strict 四列非空；`audit` 通过 |
 | O3 定位校准 | ①–④；支持↔反证同框；只写相较上期变化；回写 `research-state.md` |
