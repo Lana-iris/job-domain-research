@@ -64,7 +64,7 @@ python3 resources/coverage_tool.py --workbook <路径> update --date 2026-10-21 
 python3 resources/coverage_tool.py --workbook <路径> audit --date 2026-10-21 --plan plan.json
 ```
 
-`plan.json` 由 `research-state.md` §二矩阵生成：
+`plan.json` 由 `research-state.md` §三 岗位域 / 检索位矩阵生成：
 
 ```json
 {"platforms": ["猎聘", "智联招聘"], "qps": [{"id": "QP1", "min_queries": 2}]}

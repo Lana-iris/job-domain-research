@@ -3,9 +3,10 @@
 ## 一、目的与边界
 - 只负责发现候选、记录检索覆盖、核验详情页可读性。
 - 不写 JD 库、不改分数、不做去重合并、不写日报。
+- 只读 `research-state.md` §三 岗位域；不读 §二 信号域。
 
 ## 二、检索位矩阵
-- 来源：`research-state.md` §二。
+- 来源：`research-state.md` §三 岗位域 / 检索位矩阵。
 - 列：`ID | 检索主题 | 必含词/扩展词 | 每轮最低 query 数 | 城市范围 | 平台范围 | 启用`
 - `ID` 格式 `QP\d+`，稳定不变。
 - 每轮默认每日一轮；未启用检索位需说明原因。
@@ -28,7 +29,7 @@
 ### 覆盖审计
 
 - 每轮扫描后运行：`python3 coverage_tool.py audit --date YYYY-MM-DD --plan plan.json`。
-- `plan.json` 由 `research-state.md` §二矩阵生成：
+- `plan.json` 由 `research-state.md` §三 岗位域检索位矩阵生成：
   `{"platforms": ["猎聘", "智联招聘"], "qps": [{"id": "QP1", "min_queries": 2}]}`
 - 审计报告：缺失平台、QP 查询数不足、受限、零结果、待回填 `入库数`、重复行。
 - 未提供 `--plan` 时只能报告观测值，不能判断漏检；覆盖不足仍必须在交接中说明。
