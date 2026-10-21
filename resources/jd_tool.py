@@ -429,7 +429,7 @@ FIELD_SPEC: list[dict[str, Any]] = [
         "group": GROUP_OPTIONAL,
         "required": "否",
         "type": "平台|URL；平台|URL",
-        "write_rule": "最优来源在前；为空时用「来源平台|原文链接」初始化；同 URL 不重复追加",
+        "write_rule": "按发现顺序追加；为空时用「来源平台|原文链接」初始化；同 URL 不重复追加",
         "example": "猎聘|https://a.example/job/1；BOSS直聘|https://b.example/job/2",
     },
     {
