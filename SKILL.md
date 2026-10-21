@@ -50,8 +50,8 @@ description: Use when 需要对某岗位域/职能做持续研究（岗位能力
 | 产出 | 模板 | 说明 |
 |---|---|---|
 | O1 信号日报 | `templates/signal-daily.template.md` | 每日 |
-| O2a 岗位扫描采集 | `references/jd-maintenance-rules.md` + `templates/platform-coverage.xlsx` | 每日（主动检索） |
-| O2b 岗位数据维护 | `references/jd-maintenance-rules.md` + `templates/jd-library.template.xlsx` + `resources/jd_tool.py` | 每日（刷新/失效/去重/排序） |
+| O2a 岗位扫描采集 | `references/jd-scan-rules.md` + `templates/platform-coverage.xlsx` + `resources/coverage_tool.py describe` | 每日（主动检索） |
+| O2b 岗位数据维护 | `references/jd-maintenance-rules.md` + `templates/jd-library.template.xlsx` + `resources/jd_tool.py describe` | 每日（刷新/失效/去重/排序） |
 | O3 定位校准 | `templates/positioning-review.template.md` | 周，条件触发 |
 | O4 趋势报告 | `templates/domain-trend-report.template.md` | 月/季，多方向横比 |
 | O5 单次分析 | 复用 O3/O4 | 触发式 |
@@ -64,12 +64,25 @@ description: Use when 需要对某岗位域/职能做持续研究（岗位能力
 
 节奏的绝对时间（几点/周几/几号）由 `research-state.md` 声明。
 
+## O2 四步与交接边界
+
+1. 扫描并记覆盖 → `jd-scan-rules.md` + `coverage_tool.py`
+   产出：`platform-coverage.xlsx`
+2. 核验候选 → `jd-scan-rules.md`「候选核验」
+   只把详情页可读、仍在招的岗位送入下一步
+3. 更新岗位库 → `jd-maintenance-rules.md` + `jd_tool.py`
+   产出：`jd-library.xlsx` + 迭代日志
+4. 产出日报 → `signal-daily.template.md`
+   读取覆盖与库变化，写 O1
+
+边界：扫描不写库；核验不改分；维护不搜索；日报不改库。
+
 ## 交付清单（缺任一项 = 本轮未完成，不得宣称完成）
 | 产出 | 完成判据 |
 |---|---|
 | O1 信号日报 | 3–5 条 ×（证据等级 E1–E5 + Evidence / Why it matters / Career Implication / Counterevidence / Experiment）；今日学习建议 3 问；今日 JD 扫描报告；发布日期精确到日（月/年须标"日未披露"）；待验证问题表已逐条判断并回写（无变化已注明） |
-| O2a 岗位扫描采集 | 检索位矩阵全部 query 执行；平台覆盖台账逐平台有状态；首轮基线记录（覆盖 / 候选 / 去重 / 核验 / 状态不明）或持续维护记录；0 新增给出三态归因 |
-| O2b 岗位数据维护 | 新增 / 刷新 / 失效；迭代日志已由 `jd_tool.py` 自动写入；strict 四列非空；`audit` 通过 |
+| O2a 岗位扫描采集 | 检索位矩阵全部 query 执行；平台覆盖台账逐平台有状态 |
+| O2b 岗位数据维护 | 新增 / 刷新 / 失效；迭代日志 4 列已写入；`audit` 通过 |
 | O3 定位校准 | ①–④；支持↔反证同框；只写相较上期变化；回写 `research-state.md` |
 | O4 趋势报告 | ①–④；多方向横比；证据等级 |
 
@@ -78,13 +91,13 @@ description: Use when 需要对某岗位域/职能做持续研究（岗位能力
 |---|---|---|
 | 通用 | `profile.md`；`research-state.md` | profile：目标方向 / 目标 / 限制；research-state：研究问题 / 信号域 / 输出偏好 / 节奏表 |
 | O1 信号日报 | `references/evidence-grading.md`；`references/signal-selection.md`；`templates/signal-daily.template.md` | research-state：§二 检索位矩阵 + 信号优先类别、§三 输出偏好、§五 已知反证、§四 待验证表、§六 产出物状态；profile：主方向、能力现状 |
-| O2a 岗位扫描采集 | `references/jd-maintenance-rules.md`；`templates/platform-coverage.xlsx` | research-state：§二 检索位矩阵；profile：目标方向、能力现状、限制（地点） |
-| O2b 岗位数据维护 | `references/jd-maintenance-rules.md`；`references/jd-library-fields.md`；`templates/jd-library.template.xlsx`；`resources/jd_tool.py` | research-state：§二 检索位矩阵；profile：目标方向、能力现状、限制（地点）；工具可用 --config 覆盖默认权重/城市/阈值 |
+| O2a 岗位扫描采集 | `references/jd-scan-rules.md`；`templates/platform-coverage.xlsx`；`resources/coverage_tool.py describe` | research-state：§二 检索位矩阵；profile：目标方向、能力现状、限制（地点） |
+| O2b 岗位数据维护 | `references/jd-maintenance-rules.md`；`templates/jd-library.template.xlsx`；`resources/jd_tool.py describe` | research-state：§二 检索位矩阵；profile：目标方向、能力现状、限制（地点）；工具可用 --config 覆盖默认权重/城市/阈值 |
 | O3 定位校准 | `templates/positioning-review.template.md` | research-state：§四 待验证表、§五 已知反证、§六 产出物状态、§一 研究问题；profile：目标方向、背景、限制、目标 |
 | O4 趋势报告 | `templates/domain-trend-report.template.md` | research-state：§二 信号域、§四 / §五 / §六；profile：主方向 + 候选方向 |
 | 档案缺失 | `references/onboarding-flow.md` | — |
 
 ## 参考文件
 - templates/：profile · research-state · signal-daily · positioning-review · domain-trend-report · jd-library.template.xlsx · platform-coverage.xlsx
-- references/：evidence-grading · signal-selection · jd-maintenance-rules · jd-library-fields · onboarding-flow
-- resources/：jd_tool.py（岗位库维护执行器）
+- references/：evidence-grading · signal-selection · jd-scan-rules · jd-maintenance-rules · onboarding-flow
+- resources/：jd_tool.py（岗位库维护执行器）· coverage_tool.py（检索覆盖台账执行器）
