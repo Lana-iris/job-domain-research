@@ -516,8 +516,11 @@ def parse_date(v):
     return None
 
 
-def date_value_problem(v, allow_unknown=False):
-    """检查单元格日期写法；正常返回 None，否则返回问题描述。"""
+def date_value_problem(v, allow_unknown=False, allow_month=False):
+    """检查单元格日期写法；正常返回 None，否则返回问题描述。
+
+    allow_month：是否允许「YYYY-MM（日未披露）」。日级列（首次/最后发现、失效、核实日期）必须为 False。
+    """
     if isinstance(v, (dt.datetime, dt.date)):
         return None
     s = str(v or "").strip()
@@ -532,12 +535,15 @@ def date_value_problem(v, allow_unknown=False):
         except ValueError:
             return "日期不存在"
     if DATE_MONTH_RE.fullmatch(s):
-        return None
+        return None if allow_month else "不允许月精度（该列必须精确到日 YYYY-MM-DD）"
     if re.fullmatch(r"\d{4}", s):
-        return "裸年份（应写 YYYY-MM（日未披露）或 YYYY-MM-DD）"
+        return ("裸年份（应写 YYYY-MM（日未披露）或 YYYY-MM-DD）" if allow_month
+                else "裸年份（该列必须精确到日 YYYY-MM-DD）")
     if re.fullmatch(r"\d{4}-\d{1,2}", s):
-        return "仅有月份（应写 YYYY-MM（日未披露））"
-    return "格式不符（应为 YYYY-MM-DD / YYYY-MM（日未披露））"
+        return ("仅有月份（应写 YYYY-MM（日未披露））" if allow_month
+                else "仅有月份（该列必须精确到日 YYYY-MM-DD）")
+    return ("格式不符（应为 YYYY-MM-DD / YYYY-MM（日未披露））" if allow_month
+            else "格式不符（该列必须精确到日 YYYY-MM-DD）")
 
 
 def r_weight(pub, scan, unknown=0.4):
@@ -644,6 +650,21 @@ def sources_problem(v):
     return None
 
 
+def parse_sources(v):
+    """把「平台|URL；平台|URL」解析为 [(平台, URL)]；格式异常的部分保留为 ("", 原文)。"""
+    out = []
+    for part in SOURCES_SPLIT_RE.split(str(v or "").strip()):
+        part = part.strip()
+        if not part:
+            continue
+        if "|" in part:
+            plat, url = part.split("|", 1)
+            out.append((plat.strip(), url.strip()))
+        else:
+            out.append(("", part))
+    return out
+
+
 def validate_item(it, strict=False):
     """按 FIELD_SPEC 校验一条待入库 JSON；返回错误列表（空 = 通过）。"""
     errs = []
@@ -682,7 +703,7 @@ def validate_item(it, strict=False):
         raw = it.get(name)
         if raw in (None, ""):
             continue
-        prob = date_value_problem(raw, allow_unknown=(name == "发布日期"))
+        prob = date_value_problem(raw, allow_unknown=(name == "发布日期"), allow_month=True)
         if prob:
             errs.append(f"{name} {prob}：{raw!r}")
 
@@ -948,19 +969,31 @@ def cmd_audit(bk: Book, args):
     if miss:
         problems += 1
 
+    # 3a) 「未知」白名单：只允许 发布日期 / 公司行业分 / 公司梯队分
+    unknown_bad = []
+    for r, v in arows:
+        for k in check_fields:
+            if str(v.get(k) or "").strip() == "未知" and k not in UNKNOWN_OK:
+                unknown_bad.append(f"{v.get('去重ID')}·{k}")
+    print(f"  「未知」越界 {len(unknown_bad)} 项"
+          + (f"（仅允许 {'/'.join(sorted(UNKNOWN_OK))}）：{unknown_bad[:8]}" if unknown_bad else ""))
+    if unknown_bad:
+        problems += 1
+
     # 3b) 日期格式
     print("\n[3b] 日期格式")
-    date_fields_a = ["发布日期", "截止日期", "首次发现日期", "最后发现日期"]
-    date_fields_d = date_fields_a + ["失效日期"]
+    date_fields_a = [("发布日期", True, True), ("截止日期", False, True),
+                     ("首次发现日期", False, False), ("最后发现日期", False, False)]
+    date_fields_d = date_fields_a + [("失效日期", False, False)]
     bad_dates = []
     for label, rows, fields in (("活跃", arows, date_fields_a),
                                 ("失效", Book.rows(bk.dead), date_fields_d)):
         for r, v in rows:
-            for f in fields:
+            for f, allow_unknown, allow_month in fields:
                 raw = v.get(f)
                 if raw in (None, ""):
                     continue
-                prob = date_value_problem(raw, allow_unknown=(f == "发布日期"))
+                prob = date_value_problem(raw, allow_unknown=allow_unknown, allow_month=allow_month)
                 if prob:
                     bad_dates.append(f"{label} {v.get('去重ID')}·{f}={raw!r}（{prob}）")
     print(f"  问题 {len(bad_dates)} 处" + (f"：{bad_dates[:6]}" if bad_dates else ""))
@@ -1023,6 +1056,9 @@ def cmd_audit(bk: Book, args):
     print(f"  {len(ov)} 例" + ("" if not ov else "（岗位重新发布是事实，需人工确认）"))
     for x in ov[:6]:
         print(f"    {x[0]} {x[1]} · {x[2]}  <-> 失效 {x[3]}")
+    if ov:
+        print("    → 修：重新发布请走 --allow-repost + --repost-evidence；否则人工确认后清理")
+        problems += 1
 
     # 5b) 跨表重复（归一化：公司名剥离标注 + 城市取主体）
     dead_n = {}
@@ -1036,6 +1072,7 @@ def cmd_audit(bk: Book, args):
         print(f"    {x[0]}  [{x[1][0]} · {x[1][1]} · {x[1][2]}]  <-> 失效 {x[2]}")
     if ov_n:
         print("    → 均为「书写差异导致的重复入册」；add 已能自动识别该形态")
+        problems += 1
 
     # 5c) 活跃表内重复（归一化）
     act_n = {}
@@ -1060,6 +1097,7 @@ def cmd_audit(bk: Book, args):
         print(f"    {x}")
     if stale:
         print("  → 修：python3 jd_tool.py purge --apply")
+        problems += 1
 
     # 7) 截止日期已过但仍活跃（规则冲突，只报不自动处理）
     conflict = []
@@ -1164,25 +1202,43 @@ def load_repost_evidence(path):
             sys.exit(f"重新发布证据第 {i} 条缺字段 {miss}")
         if str(e["状态"]).strip() not in ("在招", "可投"):
             sys.exit(f"重新发布证据第 {i} 条状态必须为「在招」或「可投」，实际 {e['状态']!r}")
+        if not re.fullmatch(r"JD\d+", str(e["原jd_id"]).strip()):
+            sys.exit(f"重新发布证据第 {i} 条原jd_id 必须是 JD+数字，实际 {e['原jd_id']!r}")
         if not URL_RE.fullmatch(str(e["证据链接"]).strip()):
             sys.exit(f"重新发布证据第 {i} 条证据链接必须是 http(s) URL")
-        prob = date_value_problem(e["核实日期"])
+        prob = date_value_problem(e["核实日期"], allow_month=False)
         if prob:
             sys.exit(f"重新发布证据第 {i} 条核实日期{prob}：{e['核实日期']!r}")
         out.append(e)
     return out
 
 
-def match_repost(entries, dead_ids, it):
-    """按 原jd_id 或 公司+职位+城市（归一化）匹配失效行。"""
+def match_repost(entries, dead_rows, dead_ids):
+    """按 原jd_id 精确匹配失效行（不接受三元组兜底）。
+
+    返回 (证据, 实际失效ID, 错误列表)：
+      - 原jd_id 必须存在于失效表；
+      - 且必须是当前岗位命中的失效行之一；
+      - 证据中的公司/职位/城市必须与该失效行一致（归一化比对）。
+    备注只引用实际匹配到的失效 ID，绝不引用输入里可能伪造的 ID。
+    """
+    errors = []
     for e in entries or []:
-        if str(e.get("原jd_id", "")).strip() in dead_ids:
-            return e
-        if (norm_company(e.get("公司名称")) == norm_company(it.get("公司名称"))
-                and str(e.get("职位名称", "")).strip() == str(it.get("职位名称", "")).strip()
-                and norm_city(e.get("工作城市")) == norm_city(it.get("工作城市"))):
-            return e
-    return None
+        raw_id = str(e.get("原jd_id") or "").strip()
+        if raw_id not in dead_rows:
+            errors.append(f"原jd_id {raw_id} 不存在于失效表")
+            continue
+        if raw_id not in dead_ids:
+            errors.append(f"原jd_id {raw_id} 与当前岗位不匹配（命中失效行 {dead_ids}）")
+            continue
+        dead = dead_rows[raw_id]
+        if (norm_company(e.get("公司名称")) != norm_company(dead.get("公司名称"))
+                or str(e.get("职位名称", "")).strip() != str(dead.get("职位名称", "")).strip()
+                or norm_city(e.get("工作城市")) != norm_city(dead.get("工作城市"))):
+            errors.append(f"原jd_id {raw_id} 的公司/职位/城市与失效表记录不一致")
+            continue
+        return e, raw_id, []
+    return None, None, errors
 
 
 def merge_source_into_row(bk: Book, r, it):
@@ -1208,7 +1264,7 @@ def merge_source_into_row(bk: Book, r, it):
             return True, "init"
     if not url:
         return False, "无来源链接"
-    if url in str(cell.value or ""):
+    if any(u == url for _, u in parse_sources(cell.value)):
         return False, "已有该来源"
     cell.value = f"{str(cell.value).strip()}；{platform}|{url}"
     return True, "append"
@@ -1237,18 +1293,26 @@ def cmd_add(bk: Book, args):
 
     today = args.today
     ha = bk.hdr_a()
-    if args.merge_sources and "全部来源" not in ha:
+    if "全部来源" not in ha:
         Book.ensure_column(bk.active, "全部来源")
         ha = bk.hdr_a()
+
+    missing_cols = [h for h in REQUIRED_INPUTS if h not in ha]
+    if missing_cols:
+        sys.exit(f"活跃表缺少必填列 {missing_cols}；add 已中止，未写入任何行")
 
     row_by_strict, row_by_norm = {}, {}
     for r, v in Book.rows(bk.active):
         row_by_strict.setdefault(key_strict(v), r)
         row_by_norm.setdefault(key_norm(v), r)
     dead_by_strict, dead_by_norm = {}, {}
+    dead_rows = {}
     for r, v in Book.rows(bk.dead):
-        dead_by_strict.setdefault(key_strict(v), []).append(v.get("去重ID"))
-        dead_by_norm.setdefault(key_norm(v), []).append(v.get("去重ID"))
+        jid = str(v.get("去重ID") or "").strip()
+        if jid:
+            dead_rows.setdefault(jid, v)
+        dead_by_strict.setdefault(key_strict(v), []).append(jid)
+        dead_by_norm.setdefault(key_norm(v), []).append(jid)
 
     # 下一个去重 ID
     mx = 0
@@ -1260,6 +1324,7 @@ def cmd_add(bk: Book, args):
     nxt = mx + 1
 
     added, merged, skipped = [], [], 0
+    provenance_errors = 0
     for it in items:
         if not isinstance(it, dict):
             print("  SKIP 输入项不是对象")
@@ -1302,12 +1367,13 @@ def cmd_add(bk: Book, args):
                       f"（重新发布请加 --allow-repost + --repost-evidence）：{k}")
                 skipped += 1
                 continue
-            match = match_repost(evidence, dead_ids, it)
-            if not match:
-                print(f"  SKIP 失效表已有 {dead_ids}，但 --repost-evidence 未命中该岗位：{k}")
+            match, origin, ev_errs = match_repost(evidence, dead_rows, dead_ids)
+            if match is None:
+                detail = "；".join(ev_errs) if ev_errs else "未提供可用证据"
+                print(f"  ERROR 重新发布证据无效（{detail}）：{k}")
+                provenance_errors += 1
                 skipped += 1
                 continue
-            origin = str(match.get("原jd_id") or dead_ids[0]).strip()
 
         ind, tier, used_default = resolve_company_scores(
             it.get("公司行业分"), it.get("公司梯队分"))
@@ -1318,11 +1384,10 @@ def cmd_add(bk: Book, args):
         R = r_weight(it.get("发布日期"), today, unknown=args.r_unknown)
         C = c_weight(ind, tier)
         F = float(_int_1_5(it["契合度(1-5)"])) / 5.0
-        Ci = ci_weight(it.get("工作城市"), it.get("城市权重Ci"))
+        Ci = ci_weight(it.get("工作城市"))
         A = float(_int_1_5(it["当前可达性(1-5)"])) / 5.0
 
         row = dict(it)
-        row.pop("城市权重Ci", None)
         row["去重ID"] = f"JD{nxt:03d}"
         row["抓取日期"] = str(today)
         row["首次发现日期"] = str(today)
@@ -1332,6 +1397,8 @@ def cmd_add(bk: Book, args):
         row["契合权重F"] = round(F, 3)
         row["城市权重Ci"] = Ci
         row["综合优先级分"] = total_score(R, C, F, Ci, A)
+        if "全部来源" in ha and not str(row.get("全部来源") or "").strip():
+            row["全部来源"] = f"{str(it.get('来源平台')).strip()}|{str(it.get('原文链接')).strip()}"
         if origin:
             _append_note(row, f"[重新发布·原 {origin} 已失效]")
 
@@ -1350,7 +1417,7 @@ def cmd_add(bk: Book, args):
 
     if not added and not merged:
         print(f"  无新增、无合并来源（跳过 {skipped} 条）。")
-        return 0
+        return 1 if provenance_errors else 0
 
     print(f"\n  新增 {len(added)} 条，合并来源 {len(merged)} 条（跳过 {skipped} 条）：")
     for a in added:
@@ -1358,6 +1425,8 @@ def cmd_add(bk: Book, args):
         print(f"    {a[0]}  {a[1]} · {a[2]}  综合={a[3]}（R={a[4]}）{tail}")
     for m in merged:
         print(f"    合并来源 {m[0]}  {m[1]} · {m[2]}  +{m[3]}")
+    if provenance_errors:
+        print(f"  ⚠ 有 {provenance_errors} 条重新发布证据被拒（未入册）")
 
     if added and any(a[4] == args.r_unknown for a in added) and args.r_unknown != 0.4:
         print(f"  ⚠ 有条目按「发布日期未知 → R={args.r_unknown}」计分")
@@ -1366,7 +1435,7 @@ def cmd_add(bk: Book, args):
         n = do_sort(bk)
         print(f"  已按综合优先级分降序重排（{n} 行）")
     bk.save(do_backup=not args.no_backup)
-    return 0
+    return 1 if provenance_errors else 0
 
 
 # ---------------------------------------------------------------- refresh
@@ -1397,7 +1466,7 @@ def load_refresh_evidence(path):
             sys.exit(f"刷新证据第 {i} 条状态必须为 {list(REFRESH_STATUS)} 之一，实际 {status!r}")
         if not URL_RE.fullmatch(str(e["证据链接"]).strip()):
             sys.exit(f"刷新证据第 {i} 条证据链接必须是 http(s) URL")
-        prob = date_value_problem(e["核实日期"])
+        prob = date_value_problem(e["核实日期"], allow_month=False)
         if prob:
             sys.exit(f"刷新证据第 {i} 条核实日期{prob}：{e['核实日期']!r}")
         out.append(e)
@@ -1825,12 +1894,14 @@ def cmd_log(bk: Book, args):
     row = [str(args.today), change,
            f"活跃{before_a}→{active_now}，失效{before_d}→{dead_now}", reason]
     print("  日志行：" + " | ".join(row))
+
+    # 先确保日志目标可用（缺表则创建、表头不符则中止），再做备份，避免留下无用备份
+    ws, hdr = ensure_log_sheet(bk)
     if args.dry_run:
         print("  [dry-run] 未写入。")
         return 0
 
     bk.backup("迭代日志")
-    ws, hdr = ensure_log_sheet(bk)
     r = ws.max_row + 1
     for name, val in zip(LOG_COLS, row):
         ws.cell(r, hdr[name]).value = val
