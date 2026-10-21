@@ -71,7 +71,7 @@ description: Use when 需要对某岗位域/职能做持续研究（岗位能力
 2. 核验候选 → `jd-scan-rules.md`「候选核验」
    只把详情页可读、仍在招的岗位送入下一步
 3. 更新岗位库 → `jd-maintenance-rules.md` + `jd_tool.py`
-   产出：`jd-library.xlsx` + 迭代日志
+   产出：`JD扫描-活跃库.xlsx` + 迭代日志
 4. 产出日报 → `signal-daily.template.md`
    读取覆盖与库变化，写 O1
 
