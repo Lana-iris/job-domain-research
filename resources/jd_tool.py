@@ -767,6 +767,16 @@ def key_norm(d):
             norm_city(d.get("工作城市")))
 
 
+# 备注里的重新发布标记：允许括号内外空白
+REPOST_NOTE_RE = re.compile(r"\[\s*重新发布\s*·\s*原\s*(JD\d+)\s*已失效\s*\]")
+
+
+def repost_origin(note):
+    """从备注中取重新发布引用的原 JD ID；没有则返回 None。"""
+    m = REPOST_NOTE_RE.search(str(note or ""))
+    return m.group(1) if m else None
+
+
 # ---------------------------------------------------------------- 工作簿
 
 LOG_SHEET = "迭代日志"
@@ -1045,31 +1055,60 @@ def cmd_audit(bk: Book, args):
     if bad:
         problems += 1
 
-    # 5) 跨表重复
-    print("\n[5] 活跃 vs 失效 同(公司,职位)（严格原样比对）")
-    key = lambda v: (str(v.get("公司名称", "")).strip(), str(v.get("职位名称", "")).strip())
-    dead_map = {}
+    # 5) 跨表重复（严格三元组：公司 + 职位 + 城市）
+    print("\n[5] 活跃 vs 失效 同(公司,职位,城市)（严格原样比对）")
+    dead_exact, dead_norm = {}, {}
     for r, v in Book.rows(bk.dead):
-        dead_map.setdefault(key(v), []).append(v.get("去重ID"))
-    ov = [(v.get("去重ID"), v.get("公司名称"), v.get("职位名称"), dead_map[key(v)])
-          for r, v in arows if key(v) in dead_map]
-    print(f"  {len(ov)} 例" + ("" if not ov else "（岗位重新发布是事实，需人工确认）"))
+        jid = str(v.get("去重ID") or "").strip()
+        dead_exact.setdefault(key_strict(v), []).append(jid)
+        dead_norm.setdefault(key_norm(v), []).append(jid)
+
+    ov, legal = [], []
+    for r, v in arows:
+        ids = dead_exact.get(key_strict(v))
+        if not ids:
+            continue
+        matched = set(ids) | set(dead_norm.get(key_norm(v), []))
+        origin = repost_origin(v.get("备注/质量说明"))
+        if origin and origin in matched:
+            legal.append((v.get("去重ID"), origin, sorted(matched)))
+        else:
+            ov.append((v.get("去重ID"), v.get("公司名称"), v.get("职位名称"),
+                       v.get("工作城市"), ids, origin))
+    print(f"  {len(ov)} 例" + ("" if not ov else "（需人工确认或补重新发布证据）"))
     for x in ov[:6]:
-        print(f"    {x[0]} {x[1]} · {x[2]}  <-> 失效 {x[3]}")
+        print(f"    {x[0]} {x[1]} · {x[2]} · {x[3]}  <-> 失效 {x[4]}"
+              + (f"（备注引用 {x[5]}，不在命中失效行内）" if x[5] else ""))
+    if legal:
+        print(f"  合法重新发布 {len(legal)} 例（不计问题）")
+        for x in legal[:6]:
+            print(f"    {x[0]} ← 原 {x[1]}（失效表命中 {x[2]}）")
     if ov:
         print("    → 修：重新发布请走 --allow-repost + --repost-evidence；否则人工确认后清理")
         problems += 1
 
     # 5b) 跨表重复（归一化：公司名剥离标注 + 城市取主体）
-    dead_n = {}
-    for r, v in Book.rows(bk.dead):
-        dead_n.setdefault(key_norm(v), []).append(v.get("去重ID"))
-    ov_n = [(v.get("去重ID"), key_norm(v), dead_n[key_norm(v)])
-            for r, v in arows
-            if key_norm(v) in dead_n and key(v) not in dead_map]
+    ov_n, legal_n = [], []
+    for r, v in arows:
+        if key_strict(v) in dead_exact:
+            continue
+        ids = dead_norm.get(key_norm(v))
+        if not ids:
+            continue
+        matched = set(ids) | set(dead_exact.get(key_strict(v), []))
+        origin = repost_origin(v.get("备注/质量说明"))
+        if origin and origin in matched:
+            legal_n.append((v.get("去重ID"), origin, sorted(matched)))
+        else:
+            ov_n.append((v.get("去重ID"), key_norm(v), ids, origin))
     print(f"\n[5b] 同上，但按「归一化键」（公司名剥离标注 / 城市取主体）：{len(ov_n)} 例")
     for x in ov_n:
-        print(f"    {x[0]}  [{x[1][0]} · {x[1][1]} · {x[1][2]}]  <-> 失效 {x[2]}")
+        print(f"    {x[0]}  [{x[1][0]} · {x[1][1]} · {x[1][2]}]  <-> 失效 {x[2]}"
+              + (f"（备注引用 {x[3]}，不在命中失效行内）" if x[3] else ""))
+    if legal_n:
+        print(f"  合法重新发布 {len(legal_n)} 例（不计问题）")
+        for x in legal_n[:6]:
+            print(f"    {x[0]} ← 原 {x[1]}（失效表命中 {x[2]}）")
     if ov_n:
         print("    → 均为「书写差异导致的重复入册」；add 已能自动识别该形态")
         problems += 1
@@ -1293,13 +1332,14 @@ def cmd_add(bk: Book, args):
 
     today = args.today
     ha = bk.hdr_a()
-    if "全部来源" not in ha:
-        Book.ensure_column(bk.active, "全部来源")
-        ha = bk.hdr_a()
 
     missing_cols = [h for h in REQUIRED_INPUTS if h not in ha]
     if missing_cols:
         sys.exit(f"活跃表缺少必填列 {missing_cols}；add 已中止，未写入任何行")
+
+    if "全部来源" not in ha:
+        Book.ensure_column(bk.active, "全部来源")
+        ha = bk.hdr_a()
 
     row_by_strict, row_by_norm = {}, {}
     for r, v in Book.rows(bk.active):
