@@ -19,11 +19,13 @@
    - **数据层路径 → `research-state.md` §八**
      - 覆盖台账路径（默认项目目录下 `platform-coverage.xlsx`）
      - JD 库路径（默认项目目录下 `JD扫描-活跃库.xlsx`）
+     - 信号库（日报存放目录）：____
    - **节奏与触发时机 → `research-state.md` §四**
      - 默认：O1 每日 08:00；O3 每周周五；O4 每月 1 号
 3. **目标岗位未明确时**：先协助**拆分候选方向**（依据背景 / 目标 / 限制列出可比较的方向），**不强行要求先选定唯一方向**；主方向可在后续运行中逐步收敛。
 4. 生成**信号域初始推荐（§二）与岗位域初始推荐（§三）**并请使用者确认。
 5. 使用者确认后，用 `templates/profile.template.md` 与 `templates/research-state.template.md` 落盘两份文件。
+6. 将 `templates/platform-coverage.xlsx` 与 `templates/jd-library.template.xlsx` 复制到 §八 声明的路径；不要直接写 skill 的 `templates/`。
 
 ## 纪律
 - 只收集影响判断的信息，不过度采集。

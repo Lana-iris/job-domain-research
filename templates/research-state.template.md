@@ -62,3 +62,4 @@
 ## 八、数据层路径
 - 覆盖台账：`platform-coverage.xlsx`
 - JD 库：`JD扫描-活跃库.xlsx`
+- 信号库（日报存放目录）：____

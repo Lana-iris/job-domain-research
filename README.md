@@ -1,88 +1,130 @@
 # job-domain-research
 
-对指定岗位域持续采集公开信号与真实招聘信息，按证据强度分级，产出带反证与验证实验的周期性研究输出，并维护可追溯的岗位数据。
+## 概述
 
-当前版本：**0.4.0**
+`job-domain-research` 帮助你持续了解一个岗位领域的变化、真实招聘机会，以及自己下一步值得验证什么。
 
-## 安装
+它从两条相互独立的线索展开研究：
 
-```bash
-git clone https://github.com/Lana-iris/job-domain-research.git ~/.config/opencode/skills/personal/job-domain-research
-```
+- **市场与 AI 趋势**：关注行业变化、AI 对工作的影响、企业实践、产品落地和能力要求。
+- **真实招聘机会**：扫描并核验岗位，维护 JD 库，了解招聘要求、机会状态和岗位能力信号。
 
-重启 OpenCode 后生效。
+两类结果可以汇总到同一份日报，但会分开呈现。招聘信息可以支持某条市场判断，却不能代替市场信息采集。技能帮助你把可靠证据转化为方向假设、能力差距和可执行的验证实验；它不替你决定职业选择，也不限于某个行业或岗位。
 
-## 首次使用
+## 你会得到什么
 
-在岗位域项目目录准备 `profile.md` 与 `research-state.md`；缺失时技能会自动进入 onboarding 流程。主方向可暂缺，技能会先协助拆分候选方向。
+- **每日研究简报**：市场与 AI 趋势、真实招聘情况分开呈现。重要信号附有证据等级、事实、影响、反证和验证实验；信息不足时如实说明。
+- **持续更新的岗位库**：集中查看核验过的机会，合并重复来源，跟踪岗位状态和每轮变化。
+- **每周定位校准**：结合新证据和你的背景，梳理方向假设、能力差距及作品集需要证明的内容。
+- **每月 / 每季趋势比较**：用一致口径比较主方向与候选方向，观察需求和能力要求的变化。
+- **可接续的研究档案**：保存你的背景、研究问题、待验证事项、市场信号和岗位记录，让每轮研究都能接上之前的进展。
 
-## 产出
+## 快速开始
 
-- 日报（O1 市场信号 + O2 JD 扫描报告）
-- O2a 岗位扫描采集
-- O2b 岗位数据维护
-- O3 定位校准
-- O4 趋势报告
-- O5 单次分析
+你不需要先准备或手动编辑配置文件。把目标告诉 Agent，它会通过对话引导你完成设置。
 
-## 运行方式
+1. **说说你想研究什么**
+   例如目标岗位或行业、求职 / 转岗 / 探索目标，以及最关心的问题。不确定的地方可以先留空。
 
-- O1 与 O2 独立执行，可先可后；日报分节，详细边界见 `SKILL.md`。
-- O2 流程：扫描 → 核验 → 维护 → 日终收尾。
-- 日终顺序见 `SKILL.md`「日终收尾顺序」。
+2. **回答必要的背景问题**
+   Agent 会询问影响判断的信息，例如相关经历、技能、意向地区和实际限制；也会根据你的回答提出研究重点和岗位检索方案供你确认。
 
-## 岗位库工具（O2b）
+3. **确认研究方案**
+   Agent 根据你确认的内容建立研究档案并准备数据文件。后续想调整方向、城市或关注重点，直接告诉 Agent 即可，不必自己编辑配置。
 
-字段规格以工具内置 `FIELD_SPEC` 为唯一真源：
+4. **开始每日研究**
+   Agent 分开采集市场与 AI 趋势、扫描和维护真实招聘信息，最后将两部分整理到同一份日报。信号数量不足时会说明原因，不会为了凑数降低标准。
 
-```bash
-python3 resources/jd_tool.py describe                 # Markdown 字段表
-python3 resources/jd_tool.py describe --format json   # 机器可读规格
-```
+5. **持续校准方向**
+   按设定节奏回顾职业定位，并定期比较不同方向的趋势。技能定义每次运行的流程；是否自动定时运行取决于 Agent 所在应用的调度能力。
 
-常用命令：
+依赖：Python 3；维护岗位库需要 `openpyxl`。
 
-```bash
-python3 resources/jd_tool.py --workbook <路径> audit
-python3 resources/jd_tool.py --workbook <路径> add new.json
-python3 resources/jd_tool.py --workbook <路径> refresh --evidence refresh.json
-python3 resources/jd_tool.py --workbook <路径> purge --apply
-python3 resources/jd_tool.py --workbook <路径> log --change "新增 JD270–JD272" --reason "日常扫描"
-```
-
-### 0.4.0 行为变化
-
-- **14 个必填字段**：`add` / `audit` 按同一份 `FIELD_SPEC` 校验 14 项必填输入；`--strict` 额外要求 3 个分析字段（Market Signal / Portfolio Relevance / Portfolio Benchmark）。
-- **去重与合并来源**：活跃表命中严格键或归一化键即视为重复；默认把新来源合并进 `全部来源`（`--no-merge-sources` 可关闭），不再新增行。
-- **重新发布需证据**：`--allow-repost` 必须搭配 `--repost-evidence`，证据含原 JD、核实日期与状态。
-- **刷新需证据**：首选 `refresh --evidence`（仅在招/可投更新最后发现日期）；手工路径须 `--confirm-visible --reason`。
-- **运行级迭代日志**：日志固定 4 列（日期 / 变更项 / 统计 / 原因），一次 O2b 运行由 `log` 写一行，其它写操作不再自动追加。
-- **列按表头定位**：失效表 `失效日期` / `失效原因` / `全部来源` 均按表头名补齐。
-
-## 覆盖台账工具（O2a）
-
-字段规格以工具内置 `COVERAGE_SPEC` 为唯一真源：
+最小工具检查：
 
 ```bash
 python3 resources/coverage_tool.py describe
-python3 resources/coverage_tool.py --workbook <路径> append scan.json
-python3 resources/coverage_tool.py --workbook <路径> update --date 2026-10-21 --platform 猎聘 --qp QP1 --city 深圳 --inbound 2
-python3 resources/coverage_tool.py --workbook <路径> audit --date 2026-10-21 --plan plan.json
+python3 resources/jd_tool.py describe
 ```
 
-`plan.json` 由 `research-state.md` §三 岗位域 / 检索位矩阵生成：
+## 修改配置
 
-```json
-{"platforms": ["猎聘", "智联招聘"], "qps": [{"id": "QP1", "min_queries": 2}]}
+调整研究方向时，直接告诉 Agent 你的新目标或偏好即可。Agent 会协助更新研究档案；你不需要手动编辑配置文件。
+
+可调整的内容包括：
+
+- **市场信号关注点**：希望关注哪些变化，以及哪些内容不需要跟踪。
+- **岗位检索范围**：岗位主题、关键词、每轮查询数、城市、平台和启用状态。
+- **输出与节奏**：日报风格、信号数量目标，以及日报、岗位扫描、定位校准和趋势比较的运行时间。
+- **待验证问题**：当前想验证的假设、已有进展和下一步行动。
+- **数据保存位置**：日报、覆盖台账和岗位库的存放位置。
+
+其他规则也可按需要调整：
+
+- 岗位评分、城市和公司分类、岗位失效期限等，见 `references/jd-maintenance-rules.md`；评分等参数可用 `jd_tool.py --config <config.json>` 覆盖。
+- 覆盖台账和岗位库的表格结构见 `templates/*.xlsx`；字段口径可分别查看 `coverage_tool.py describe` 和 `jd_tool.py describe`。
+- 信号来源范围与筛选口径见 `references/signal-selection.md`。
+
+## 安装
+
+把下面这句话或仓库链接直接发给支持 Skills 的 Agent，请它安装到当前环境：
+
+> 请帮我安装 job-domain-research，并确认它已放入当前环境的 Skills 目录。
+
+仓库地址：<https://github.com/Lana-iris/job-domain-research>
+
+也可以把下面的命令交给 Agent 执行；Agent 需要根据当前应用选择正确的 Skills 安装目录：
+
+```bash
+git clone https://github.com/Lana-iris/job-domain-research
 ```
 
-`audit` 报告缺失平台、QP 查询数不足、受限、零结果与待回填入库数；无 `--plan` 时只能报告观测值，不能判断漏检。
+这个技能由说明文档、参考规则、模板和工具组成，不依赖某个特定 AI 应用。常见 Skills 目录如下：
 
-## 依赖
+| Agent | 常见 Skills 目录 |
+|---|---|
+| OpenCode | `~/.config/opencode/skills/personal/` |
+| Claude Code | `~/.claude/skills/` |
+| Codex | `~/.codex/skills/` |
+| WorkBuddy | 应用内 Skills / 技能目录，或导入该文件夹 |
+| 豆包工作 | 应用内 Skills / 知识库目录，或导入该文件夹 |
 
-- Python 3
-- `openpyxl`（O2b 岗位库维护需要）
+目录名称可能随版本变化，以应用当前的技能设置为准。安装后重新加载或重启 Agent，使其发现新技能。若 Agent 不支持自动发现，可将 `SKILL.md` 作为系统提示或项目规则加载，并保留其他文件的相对路径。
 
-## License
+安装依赖：
 
-MIT
+```bash
+python3 -m pip install openpyxl
+```
+
+## 工作原理
+
+### 市场信号与招聘机会分开研究
+
+市场与 AI 趋势、真实招聘机会各自采集、分开呈现，最后可以汇总到同一份日报。招聘信息只有在支持某条具体趋势判断时，才作为该条信号的证据；岗位扫描结果不能代替市场信号研究。
+
+### 市场信号采集
+
+根据研究重点检查新闻、研究与报告、企业一手材料、产品落地和招聘等来源。默认关注近 24 小时，必要时回溯 3 天。重要结论标注证据强度，并同时呈现事实、影响、职业关联、反证和低成本实验。没有足够证据时会明确说明，不为达到数量目标而凑内容；完成后更新待验证问题的进展和下一步。
+
+### 岗位扫描与维护
+
+- **扫描与核验**：按检索计划查找岗位，记录扫描范围，核验职位详情和招聘状态。
+- **岗位维护**：将核验合格的岗位加入岗位库，合并重复来源、刷新状态、处理失效记录，并记录每轮变化。
+- **日终检查**：回填实际入库数量，检查扫描覆盖和岗位库，确保日报中的招聘部分有据可查。
+
+### 定位校准与趋势报告
+
+- **定位校准**：定期结合新证据回顾方向假设、能力差距和作品集计划，并更新待验证问题。
+- **趋势报告**：每月或每季用一致口径比较主方向与候选方向，沉淀阶段性判断。
+
+## 设计特点
+
+- **判断有证据边界**：区分事实、分析和建议；证据不足时直接说明。
+- **同时检视支持与反证**：不只寻找支持既有想法的信息。
+- **趋势与机会各自清楚**：市场变化和岗位样本分开采集，既可相互印证，也不会混为一谈。
+- **每轮结果可追溯**：保留研究结论、岗位变化和来源记录，便于复核与接续。
+- **适配不同方向**：研究主题、关键词、平台、城市和优先级可按你的目标调整。
+- **研究落到行动**：把发现转化为能力验证、作品集方向和下一步小实验。
+
+License: MIT
