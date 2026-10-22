@@ -18,12 +18,18 @@ git clone https://github.com/Lana-iris/job-domain-research.git ~/.config/opencod
 
 ## 产出
 
-- O1 信号日报
+- 日报（O1 市场信号 + O2 JD 扫描报告）
 - O2a 岗位扫描采集
 - O2b 岗位数据维护
 - O3 定位校准
 - O4 趋势报告
 - O5 单次分析
+
+## 运行方式
+
+- O1 与 O2 独立执行，可先可后；日报分节，详细边界见 `SKILL.md`。
+- O2 流程：扫描 → 核验 → 维护 → 日终收尾。
+- 日终顺序见 `SKILL.md`「日终收尾顺序」。
 
 ## 岗位库工具（O2b）
 
